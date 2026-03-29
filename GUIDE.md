@@ -45,6 +45,8 @@ powershell -ExecutionPolicy Bypass -File .\build_koromo_grapher_exe.ps1
 ```powershell
 git submodule update --init --recursive
 
+pip install -r requirements.txt
+
 cd .\_external\amae-koromo-scripts
 npm install --legacy-peer-deps --ignore-scripts
 cd ..\..
@@ -52,6 +54,7 @@ cd ..\..
 cd .\_external\mjai-reviewer
 cargo build --release
 cd ..\..
+
 
 powershell -ExecutionPolicy Bypass -File .\build_koromo_grapher_exe.ps1
 ```
