@@ -1,0 +1,9 @@
+[control]
+state_file = 'model/default/mortal.pth'
+
+[grp]
+state_file = 'mortal/grp_bootstrap.pt'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2

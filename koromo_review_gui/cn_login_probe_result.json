@@ -1,0 +1,51 @@
+{
+  "version": "0.11.238.w",
+  "endpoint": "wss://route-2.maj-soul.com/gateway",
+  "results": [
+    {
+      "label": "ReqLogin(account, default type)",
+      "ok": false,
+      "account_id": null,
+      "access_token_present": false,
+      "error_code": 1002,
+      "error_json": "{\"account\":\"SA011\",\"type\":0}",
+      "extra": null
+    },
+    {
+      "label": "ReqLogin(account, type=0)",
+      "ok": false,
+      "account_id": null,
+      "access_token_present": false,
+      "error_code": 1002,
+      "error_json": "{\"account\":\"SA011\",\"type\":0}",
+      "extra": null
+    },
+    {
+      "label": "ReqLogin(account, type=1)",
+      "ok": false,
+      "account_id": null,
+      "access_token_present": false,
+      "error_code": 1002,
+      "error_json": "{\"account\":\"SA011\",\"type\":1}",
+      "extra": null
+    },
+    {
+      "label": "ReqLogin(email, default type)",
+      "ok": true,
+      "account_id": 20205264,
+      "access_token_present": true,
+      "error_code": null,
+      "error_json": null,
+      "extra": null
+    },
+    {
+      "label": "ReqEmailLogin(email)",
+      "ok": false,
+      "account_id": null,
+      "access_token_present": false,
+      "error_code": 2,
+      "error_json": null,
+      "extra": null
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+PySide6
+requests
+aiohttp
+websockets
+protobuf
+tensoul
+toml
+torch
+numpy
+tqdm

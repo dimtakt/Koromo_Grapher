@@ -1,0 +1,2 @@
+"""Koromo review GUI package."""
+
