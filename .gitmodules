@@ -1,3 +1,6 @@
 [submodule "_external/amae-koromo-scripts"]
 	path = _external/amae-koromo-scripts
 	url = https://github.com/SAPikachu/amae-koromo-scripts.git
+[submodule "_external/mahjong_soul_api"]
+	path = _external/mahjong_soul_api
+	url = https://github.com/MahjongRepository/mahjong_soul_api.git
