@@ -23,3 +23,6 @@ build/
 
 .venv-build-cpu/*
 release/*
+_external/amae-koromo-scripts/node_modules/*
+!_external/amae-koromo-scripts/node_modules/.gitkeep
+_external/amae-koromo-scripts/.cache/*

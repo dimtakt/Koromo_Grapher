@@ -40,6 +40,11 @@ function Copy-IfExists {
 Write-Host "[1/7] Validating Python 3.12 environment..."
 & $pythonExe -c "import PySide6, PyInstaller, tensoul, tqdm, torch, numpy; print('ok')"
 
+$amaeNodeModules = Join-Path $root "_external\amae-koromo-scripts\node_modules"
+if (-not (Test-Path $amaeNodeModules)) {
+    throw "Missing _external\amae-koromo-scripts\node_modules. Run 'npm install' in _external\amae-koromo-scripts before building."
+}
+
 Write-Host "[2/7] Cleaning previous build artifacts..."
 foreach ($path in @("build", "dist")) {
     if (Test-Path $path) {
