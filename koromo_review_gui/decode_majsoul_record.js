@@ -1,7 +1,7 @@
 const fs = require("fs");
-const path = require("path");
 const protobuf = require("../_external/amae-koromo-scripts/node_modules/protobufjs");
 const { lq } = require("../_external/amae-koromo-scripts/majsoulPb");
+const pbDef = require("../_external/amae-koromo-scripts/majsoulPb.proto.json");
 
 function main() {
   const recordPath = process.argv[2];
@@ -11,9 +11,7 @@ function main() {
     process.exit(1);
   }
 
-  const root = protobuf.Root.fromJSON(
-    JSON.parse(fs.readFileSync(path.join(__dirname, "..", "_external", "amae-koromo-scripts", "majsoulPb.proto.json"), "utf8"))
-  );
+  const root = protobuf.Root.fromJSON(pbDef);
   const wrapper = lq.Wrapper.decode(fs.readFileSync(recordPath));
   const type = root.lookupType(wrapper.name);
   const payload = type.decode(wrapper.data);

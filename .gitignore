@@ -26,3 +26,5 @@ release/*
 _external/amae-koromo-scripts/node_modules/*
 !_external/amae-koromo-scripts/node_modules/.gitkeep
 _external/amae-koromo-scripts/.cache/*
+koromo_review_gui/bundled/.cache/*
+!KoromoGrapherBundle.spec

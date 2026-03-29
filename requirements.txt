@@ -8,3 +8,4 @@ toml
 torch
 numpy
 tqdm
+pyinstaller

@@ -53,7 +53,13 @@ def mortal_root() -> Path:
 
 
 def gui_root() -> Path:
-    return repo_root() / "koromo_review_gui"
+    direct = repo_root() / "koromo_review_gui"
+    if direct.exists():
+        return direct
+    internal = repo_root() / "_internal" / "koromo_review_gui"
+    if internal.exists():
+        return internal
+    return direct
 
 
 def local_review_runner_path() -> Path:

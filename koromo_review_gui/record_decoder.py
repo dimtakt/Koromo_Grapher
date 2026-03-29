@@ -16,7 +16,14 @@ class DecodedRecordResult:
 
 class MajsoulRecordDecoder:
     def __init__(self, script_path: str | Path | None = None):
-        self.script_path = Path(script_path) if script_path else gui_root() / "decode_majsoul_record.js"
+        self.script_path = Path(script_path) if script_path else self._default_script_path()
+
+    @staticmethod
+    def _default_script_path() -> Path:
+        bundled = gui_root() / "bundled" / "decode_majsoul_record.bundle.js"
+        if bundled.exists():
+            return bundled
+        return gui_root() / "decode_majsoul_record.js"
 
     def decode(self, record_data_path: str | Path, decoded_json_path: str | Path | None = None) -> DecodedRecordResult:
         record_data_path = Path(record_data_path)

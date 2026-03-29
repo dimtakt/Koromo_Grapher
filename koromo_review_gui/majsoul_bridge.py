@@ -22,11 +22,18 @@ class FetchResult:
 class MajsoulNodeBridge:
     def __init__(
         self,
-        script_path: str | Path = gui_root() / "fetch_majsoul_record.js",
+        script_path: str | Path | None = None,
         default_url_base: str = "https://mahjongsoul.game.yo-star.com/",
     ):
-        self.script_path = Path(script_path)
+        self.script_path = Path(script_path) if script_path else self._default_script_path()
         self.default_url_base = default_url_base
+
+    @staticmethod
+    def _default_script_path() -> Path:
+        bundled = gui_root() / "bundled" / "fetch_majsoul_record.bundle.js"
+        if bundled.exists():
+            return bundled
+        return gui_root() / "fetch_majsoul_record.js"
 
     def fetch_game_record(
         self,

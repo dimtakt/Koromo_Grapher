@@ -10,6 +10,7 @@
 - [Koromo](http://amae-koromo.sapk.ch/) 링크 기준으로 Mahjong Soul 대국을 내려받아, 로컬 Mortal 엔진으로 복기 및 통계를 보여주는 도구입니다.
 - 치터 구분 / 유저 성적 추이 확인 등의 목적으로 개인 용도로 제작하였으며, 제작에 `OpenAI Codex`를 사용했습니다.
 
+
 ## 사용법
 
 1. Koromo 플레이어 링크 입력

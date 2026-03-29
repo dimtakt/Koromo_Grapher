@@ -45,38 +45,51 @@ if (-not (Test-Path $amaeNodeModules)) {
     throw "Missing _external\amae-koromo-scripts\node_modules. Run 'npm install' in _external\amae-koromo-scripts before building."
 }
 
+Write-Host "[2/8] Bundling Node helper scripts..."
+$nodeCmd = (Get-Command node -ErrorAction SilentlyContinue)
+if (-not $nodeCmd) {
+    throw "Node.js was not found in PATH."
+}
+& $nodeCmd.Source (Join-Path $root "koromo_review_gui\build_node_bundles.mjs")
+if ($LASTEXITCODE -ne 0) {
+    throw "Node bundle build failed."
+}
+
 $reviewerExe = Join-Path $root "_external\mjai-reviewer\target\release\mjai-reviewer.exe"
 if (-not (Test-Path $reviewerExe)) {
     throw "Missing _external\mjai-reviewer\target\release\mjai-reviewer.exe. Run 'cargo build --release' in _external\mjai-reviewer before building."
 }
 
-Write-Host "[2/7] Cleaning previous build artifacts..."
+Write-Host "[3/8] Cleaning previous build artifacts..."
 foreach ($path in @("build", "dist")) {
     if (Test-Path $path) {
         Remove-Item -Recurse -Force $path
     }
 }
 
-Write-Host "[3/7] Building KoromoGrapher.exe..."
+Write-Host "[4/8] Building KoromoGrapher.exe..."
 & $pythonExe -m PyInstaller `
     --noconfirm `
     --clean `
     "KoromoGrapherBundle.spec"
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller build failed."
+}
 
-Write-Host "[4/7] Building run_local_mortal_review.exe..."
+Write-Host "[5/8] Building run_local_mortal_review.exe..."
 Write-Host "Included in KoromoGrapherBundle.spec (shared runtime)"
 
 $distRoot = Join-Path $root "dist\KoromoGrapher"
 $releaseRoot = Join-Path $root "release\KoromoGrapher"
 
-Write-Host "[5/7] Preparing release folder..."
+Write-Host "[6/8] Preparing release folder..."
 if (Test-Path $releaseRoot) {
     Remove-Item -Recurse -Force $releaseRoot
 }
 New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
 Copy-Item -Recurse -Force (Join-Path $distRoot "*") $releaseRoot
 
-Write-Host "[6/7] Copying runtime assets..."
+Write-Host "[7/8] Copying runtime assets..."
 Copy-Tree (Join-Path $root "mortal") (Join-Path $releaseRoot "mortal")
 Copy-Tree (Join-Path $root "libriichi") (Join-Path $releaseRoot "libriichi")
 
@@ -86,10 +99,9 @@ New-Item -ItemType Directory -Force -Path $externalRelease | Out-Null
 $amaeSrc = Join-Path $root "_external\amae-koromo-scripts"
 $amaeDst = Join-Path $externalRelease "amae-koromo-scripts"
 New-Item -ItemType Directory -Force -Path $amaeDst | Out-Null
-foreach ($file in @("majsoul.js", "majsoulPb.js", "majsoulPb.proto.json", "env.js", "LICENSE")) {
+foreach ($file in @("LICENSE")) {
     Copy-IfExists (Join-Path $amaeSrc $file) (Join-Path $amaeDst $file)
 }
-Copy-IfExists (Join-Path $amaeSrc "node_modules") (Join-Path $amaeDst "node_modules")
 
 $reviewerSrc = Join-Path $root "_external\mjai-reviewer"
 $reviewerDst = Join-Path $externalRelease "mjai-reviewer"
@@ -136,5 +148,5 @@ if (Test-Path (Join-Path $root "README.md")) {
     Copy-Item -Force (Join-Path $root "README.md") (Join-Path $releaseRoot "README.md")
 }
 
-Write-Host "[7/7] Build complete."
+Write-Host "[8/8] Build complete."
 Write-Host "Release folder: $releaseRoot"
