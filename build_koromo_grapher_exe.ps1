@@ -45,6 +45,11 @@ if (-not (Test-Path $amaeNodeModules)) {
     throw "Missing _external\amae-koromo-scripts\node_modules. Run 'npm install' in _external\amae-koromo-scripts before building."
 }
 
+$reviewerExe = Join-Path $root "_external\mjai-reviewer\target\release\mjai-reviewer.exe"
+if (-not (Test-Path $reviewerExe)) {
+    throw "Missing _external\mjai-reviewer\target\release\mjai-reviewer.exe. Run 'cargo build --release' in _external\mjai-reviewer before building."
+}
+
 Write-Host "[2/7] Cleaning previous build artifacts..."
 foreach ($path in @("build", "dist")) {
     if (Test-Path $path) {
@@ -89,7 +94,7 @@ Copy-IfExists (Join-Path $amaeSrc "node_modules") (Join-Path $amaeDst "node_modu
 $reviewerSrc = Join-Path $root "_external\mjai-reviewer"
 $reviewerDst = Join-Path $externalRelease "mjai-reviewer"
 New-Item -ItemType Directory -Force -Path (Join-Path $reviewerDst "target\release") | Out-Null
-Copy-IfExists (Join-Path $reviewerSrc "target\release\mjai-reviewer.exe") (Join-Path $reviewerDst "target\release\mjai-reviewer.exe")
+Copy-IfExists $reviewerExe (Join-Path $reviewerDst "target\release\mjai-reviewer.exe")
 Copy-IfExists (Join-Path $reviewerSrc "LICENSE") (Join-Path $reviewerDst "LICENSE")
 
 $mahjongApiSrc = Join-Path $root "_external\mahjong_soul_api"
