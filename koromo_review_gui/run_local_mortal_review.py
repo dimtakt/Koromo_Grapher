@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import torch
 
 if __package__ in (None, ""):
@@ -31,6 +32,8 @@ from model import Brain, DQN, GRP
 
 
 def compat_torch_load(path: str | Path):
+    # Older checkpoints can still refer to numpy.core.multiarray during unpickling.
+    sys.modules.setdefault("numpy.core.multiarray", np._core.multiarray)
     return torch.load(path, weights_only=False, map_location=torch.device("cpu"))
 
 
