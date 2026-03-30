@@ -33,7 +33,15 @@ from model import Brain, DQN, GRP
 
 def compat_torch_load(path: str | Path):
     # Older checkpoints can still refer to numpy.core.multiarray during unpickling.
-    sys.modules.setdefault("numpy.core.multiarray", np._core.multiarray)
+    try:
+        import numpy.core.multiarray as _np_multiarray  # type: ignore
+        sys.modules.setdefault("numpy.core.multiarray", _np_multiarray)
+    except Exception:
+        # NumPy API changed in newer versions (e.g. no longer exposing np._core),
+        # so we only keep a best-effort alias here.
+        core_multiarray = getattr(getattr(np, "core", None), "multiarray", None)
+        if core_multiarray is not None:
+            sys.modules.setdefault("numpy.core.multiarray", core_multiarray)
     return torch.load(path, weights_only=False, map_location=torch.device("cpu"))
 
 

@@ -66,6 +66,7 @@ class GameAnalysis:
     top3_agreement: float
     bad_move_rate_5: float
     bad_move_rate_10: float
+    uuid: Optional[str] = None
     bad_move_count_5: int = 0
     bad_move_count_10: int = 0
     started_at: Optional[datetime] = None
@@ -125,6 +126,7 @@ def aggregate_stats_from_dict(payload: dict[str, Any]) -> AggregateStats:
         games.append(
             GameAnalysis(
                 game_id=row["game_id"],
+                uuid=row.get("uuid"),
                 decision_count=int(row["decision_count"]),
                 rating=float(row["rating"]),
                 top1_agreement=float(row["top1_agreement"]),

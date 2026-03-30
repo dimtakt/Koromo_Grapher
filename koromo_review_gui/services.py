@@ -168,6 +168,8 @@ class AnalyzerService:
                     DecisionRecord(
                         game_id=game.game_id,
                         turn_index=turn,
+                        round_label="샘플",
+                        junme=turn + 1,
                         actual_action=f"actual_{turn % 5}",
                         model_action=f"model_{turn % 7}",
                         model_probability=probability,
@@ -247,6 +249,7 @@ class AnalyzerService:
             game = metadata.get(row.game_id)
             if not game:
                 continue
+            row.uuid = game.uuid
             row.started_at = game.started_at
             notes = []
             if game.placement is not None:

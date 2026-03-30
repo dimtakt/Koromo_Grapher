@@ -46,6 +46,7 @@ def summarize_decisions(decisions: list[DecisionRecord]) -> AggregateStats:
         game_rows.append(
             GameAnalysis(
                 game_id=game_id,
+                uuid=None,
                 decision_count=count,
                 rating=100.0 * (rating_avg ** 2),
                 top1_agreement=_safe_ratio(top1_count, count),

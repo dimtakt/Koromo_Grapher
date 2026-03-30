@@ -4,13 +4,15 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtCore import QObject, QThread, Qt, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QObject, QSize, QThread, Qt, Signal
+from PySide6.QtGui import QAction, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QTransform
+from PySide6.QtWidgets import QSplitter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QHeaderView,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -22,6 +24,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QTableWidget,
@@ -32,9 +35,371 @@ from PySide6.QtWidgets import (
 
 from .local_settings import LocalSettingsStore
 from .models import AnalysisSession, EngineAnalysisResult, GameAnalysis, PlayerQuery
+from .review_detail_parser import ReviewFuuroGroup, ReviewGameDetail, ReviewKyokuDetail, parse_review_detail
 from .runtime_paths import repo_root
 from .services import AnalyzerService, KoromoService, MajsoulPaifuService
 from .session_store import AnalysisSessionStore
+
+
+def tile_font_family() -> str:
+    candidates = [
+        "Noto Sans Symbols 2",
+        "Symbola",
+        "Arial Unicode MS",
+        "Noto Sans Symbols",
+    ]
+    families = set(QFontDatabase.families())
+    for candidate in candidates:
+        if candidate in families:
+            return candidate
+    return "Sans Serif"
+
+
+def tile_to_unicode(tile: str) -> str:
+    token = str(tile).strip()
+    if not token:
+        return "-"
+    suited = {
+        "m": ["\U0001F007", "\U0001F008", "\U0001F009", "\U0001F00A", "\U0001F00B", "\U0001F00C", "\U0001F00D", "\U0001F00E", "\U0001F00F"],
+        "s": ["\U0001F010", "\U0001F011", "\U0001F012", "\U0001F013", "\U0001F014", "\U0001F015", "\U0001F016", "\U0001F017", "\U0001F018"],
+        "p": ["\U0001F019", "\U0001F01A", "\U0001F01B", "\U0001F01C", "\U0001F01D", "\U0001F01E", "\U0001F01F", "\U0001F020", "\U0001F021"],
+        "z": ["\U0001F000", "\U0001F001", "\U0001F002", "\U0001F003", "\U0001F006", "\U0001F005", "\U0001F004"],
+    }
+    honors = {
+        "e": suited["z"][0],
+        "s": suited["z"][1],
+        "w": suited["z"][2],
+        "n": suited["z"][3],
+        "h": suited["z"][4],
+        "f": suited["z"][5],
+        "c": suited["z"][6],
+        "p": suited["z"][4],
+    }
+    lower = token.lower()
+    if len(lower) == 1 and lower in honors:
+        return honors[lower]
+    if len(lower) in {2, 3} and lower[0].isdigit() and lower[1] in {"m", "p", "s"}:
+        if lower[0] == "0":
+            return suited[lower[1]][4]
+        index = int(lower[0]) - 1
+        if 0 <= index < 9:
+            return suited[lower[1]][index]
+    return token
+
+
+def is_red_five(tile: str) -> bool:
+    lower = str(tile).lower().strip()
+    return (len(lower) == 2 and lower[0] == "0" and lower[1] in {"m", "p", "s"}) or (
+        len(lower) == 3 and lower[0] == "5" and lower[1] in {"m", "p", "s"} and lower[2] == "r"
+    )
+
+
+class TileGlyphStrip(QWidget):
+    def __init__(
+        self,
+        tiles: list[str],
+        called_index: int | None = None,
+        stacked_tile: str | None = None,
+        stacked_on_index: int | None = None,
+        parent: QWidget | None = None,
+        *,
+        font_px: int = 28,
+        color: str = "#1f2937",
+        red_color: str = "#c53030",
+        vertical_lift: int = 0,
+    ):
+        super().__init__(parent)
+        self.tiles = list(tiles)
+        self.called_index = called_index
+        self.stacked_tile = stacked_tile
+        self.stacked_on_index = stacked_on_index
+        self.font_px = font_px
+        self.color = QColor(color)
+        self.red_color = QColor(red_color)
+        self.vertical_lift = vertical_lift
+        self.setFixedHeight(font_px + 14 + (font_px if stacked_tile else 0))
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    @staticmethod
+    def _trim_transparent(pixmap: QPixmap) -> QPixmap:
+        image = pixmap.toImage()
+        width = image.width()
+        height = image.height()
+        min_x = width
+        min_y = height
+        max_x = -1
+        max_y = -1
+        for y in range(height):
+            for x in range(width):
+                if QColor(image.pixelColor(x, y)).alpha() > 0:
+                    if x < min_x:
+                        min_x = x
+                    if y < min_y:
+                        min_y = y
+                    if x > max_x:
+                        max_x = x
+                    if y > max_y:
+                        max_y = y
+        if max_x < min_x or max_y < min_y:
+            return pixmap
+        return pixmap.copy(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+
+    def _glyph_pixmap(self, glyph: str, color: QColor, rotated: bool = False) -> QPixmap:
+        font = QFont(tile_font_family())
+        font.setPixelSize(self.font_px)
+        source = QPixmap(max(1, self.font_px + 2), max(1, self.font_px + 4))
+        source.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(source)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addText(0.0, 0.0, font, glyph)
+        bounds = path.boundingRect()
+        transform = QTransform()
+        transform.translate(-bounds.left(), 1.0 - bounds.top())
+        path = transform.map(path)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        painter.drawPath(path)
+        painter.end()
+        if rotated:
+            rotation = QTransform()
+            rotation.rotate(-90)
+            source = source.transformed(rotation, Qt.TransformationMode.SmoothTransformation)
+            return self._trim_transparent(source)
+        return source
+
+    def sizeHint(self) -> QSize:
+        width = 2
+        height = self.font_px + 14 + (self.font_px if self.stacked_tile else 0)
+        for index, tile in enumerate(self.tiles):
+            glyph = tile_to_unicode(tile)
+            pixmap = self._glyph_pixmap(glyph, self.red_color if is_red_five(tile) else self.color, rotated=(index == self.called_index))
+            width += pixmap.width()
+            if index != len(self.tiles) - 1:
+                width += 0
+        width += 2
+        return QSize(width, height)
+
+    def paintEvent(self, event):
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        font = QFont(tile_font_family())
+        font.setPixelSize(self.font_px)
+        painter.setFont(font)
+        x = 0
+        tile_positions: list[tuple[int, int, int, int]] = []
+        for index, tile in enumerate(self.tiles):
+            glyph = tile_to_unicode(tile)
+            color = self.red_color if is_red_five(tile) else self.color
+            if index == self.called_index:
+                rotated = self._glyph_pixmap(glyph, color, rotated=True)
+                y = self.height() - rotated.height() - self.vertical_lift
+                painter.drawPixmap(x, y, rotated)
+                tile_positions.append((x, y, rotated.width(), rotated.height()))
+                x += rotated.width()
+            else:
+                pixmap = self._glyph_pixmap(glyph, color, rotated=False)
+                y = self.height() - pixmap.height() - self.vertical_lift
+                painter.drawPixmap(x, y, pixmap)
+                tile_positions.append((x, y, pixmap.width(), pixmap.height()))
+                x += max(1, pixmap.width() - 5)
+        if self.stacked_tile is not None and self.stacked_on_index is not None and 0 <= self.stacked_on_index < len(tile_positions):
+            stack_color = self.red_color if is_red_five(self.stacked_tile) else self.color
+            stack_pixmap = self._glyph_pixmap(tile_to_unicode(self.stacked_tile), stack_color, rotated=True)
+            base_x, base_y, base_w, _ = tile_positions[self.stacked_on_index]
+            stack_x = base_x + max(0, (base_w - stack_pixmap.width()) // 2)
+            stack_y = max(0, base_y - stack_pixmap.height() - 16)
+            painter.drawPixmap(stack_x, stack_y, stack_pixmap)
+        painter.end()
+
+
+class HandCompositeStrip(QWidget):
+    def __init__(
+        self,
+        tehai_tiles: list[str],
+        fuuro_groups: list[ReviewFuuroGroup],
+        parent: QWidget | None = None,
+        *,
+        font_px: int = 30,
+        color: str = "#1f2937",
+        red_color: str = "#c53030",
+        highlight_last_tile: bool = True,
+        incoming_call_tile: str = "-",
+        incoming_call_source: str = "",
+    ):
+        super().__init__(parent)
+        self.tehai_tiles = list(tehai_tiles)
+        self.fuuro_groups = list(fuuro_groups)
+        self.font_px = font_px
+        self.color = QColor(color)
+        self.red_color = QColor(red_color)
+        self.highlight_last_tile = highlight_last_tile
+        self.incoming_call_tile = incoming_call_tile
+        self.incoming_call_source = incoming_call_source
+        self.setFixedHeight(font_px + 44)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    @staticmethod
+    def _trim_transparent(pixmap: QPixmap) -> QPixmap:
+        return TileGlyphStrip._trim_transparent(pixmap)
+
+    def _glyph_pixmap(self, glyph: str, color: QColor, rotated: bool = False) -> QPixmap:
+        font = QFont(tile_font_family())
+        font.setPixelSize(self.font_px)
+        source = QPixmap(max(1, self.font_px + 2), max(1, self.font_px + 4))
+        source.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(source)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addText(0.0, 0.0, font, glyph)
+        bounds = path.boundingRect()
+        transform = QTransform()
+        transform.translate(-bounds.left(), 1.0 - bounds.top())
+        path = transform.map(path)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(color))
+        painter.drawPath(path)
+        painter.end()
+        if rotated:
+            rotation = QTransform()
+            rotation.rotate(-90)
+            source = source.transformed(rotation, Qt.TransformationMode.SmoothTransformation)
+            return self._trim_transparent(source)
+        return source
+
+    def _tile_pixmap(self, tile: str, rotated: bool = False) -> QPixmap:
+        color = self.red_color if is_red_five(tile) else self.color
+        return self._glyph_pixmap(tile_to_unicode(tile), color, rotated=rotated)
+
+    def _sequence_width(
+        self,
+        tiles: list[str],
+        called_index: int | None = None,
+        last_tile_gap: int = 0,
+    ) -> int:
+        width = 0
+        for index, tile in enumerate(tiles):
+            pixmap = self._tile_pixmap(tile, rotated=(index == called_index))
+            width += pixmap.width() if index == called_index else max(1, pixmap.width() - 5)
+            if last_tile_gap and len(tiles) > 1 and index == len(tiles) - 2:
+                width += last_tile_gap
+        return width
+
+    def sizeHint(self) -> QSize:
+        tehai_last_gap = 5 if self.highlight_last_tile else 0
+        width = self._sequence_width(self.tehai_tiles, last_tile_gap=tehai_last_gap)
+        if self.incoming_call_tile and self.incoming_call_tile != "-":
+            metrics = QFontMetrics(QFont("Noto Sans KR", 11))
+            width += 18 + metrics.horizontalAdvance(self.incoming_call_source) + 6
+            width += self._tile_pixmap(self.incoming_call_tile).width() + 8
+        if self.fuuro_groups:
+            width += 12
+        for index, group in enumerate(self.fuuro_groups):
+            width += self._sequence_width(group.tiles, group.called_tile_index)
+            if index != len(self.fuuro_groups) - 1:
+                width += 10
+        return QSize(max(width + 4, 40), self.height())
+
+    def _draw_incoming_call_indicator(self, painter: QPainter, x: int, baseline_bottom: int) -> int:
+        if not self.incoming_call_tile or self.incoming_call_tile == "-":
+            return x
+
+        x += 18
+        source_font = QFont("Noto Sans KR", 11)
+        source_metrics = QFontMetrics(source_font)
+        source_text = self.incoming_call_source or ""
+        if source_text:
+            painter.setFont(source_font)
+            painter.setPen(QColor("#9f1239"))
+            text_y = baseline_bottom - 10
+            painter.drawText(x, text_y, source_text)
+            x += source_metrics.horizontalAdvance(source_text) + 6
+
+        pixmap = self._tile_pixmap(self.incoming_call_tile)
+        y = baseline_bottom - pixmap.height() - 8
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(251, 113, 133, 88))
+        painter.drawRoundedRect(x - 3, y - 2, pixmap.width() + 6, pixmap.height() + 4, 6, 6)
+        painter.drawPixmap(x, y, pixmap)
+        return x + pixmap.width() + 8
+
+    def _draw_sequence(
+        self,
+        painter: QPainter,
+        x: int,
+        baseline_bottom: int,
+        tiles: list[str],
+        called_index: int | None = None,
+        stacked_tile: str | None = None,
+        stacked_on_index: int | None = None,
+        base_raise: int = 0,
+        highlight_last: bool = False,
+        last_tile_gap: int = 0,
+    ) -> int:
+        tile_positions: list[tuple[int, int, int, int]] = []
+        for index, tile in enumerate(tiles):
+            pixmap = self._tile_pixmap(tile, rotated=(index == called_index))
+            y = baseline_bottom - pixmap.height() - base_raise
+            if highlight_last and index == len(tiles) - 1:
+                highlight_rect_x = x - 3
+                highlight_rect_y = y - 2
+                highlight_rect_w = pixmap.width() + 6
+                highlight_rect_h = pixmap.height() + 4
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor(253, 224, 71, 96))
+                painter.drawRoundedRect(highlight_rect_x, highlight_rect_y, highlight_rect_w, highlight_rect_h, 6, 6)
+            painter.drawPixmap(x, y, pixmap)
+            tile_positions.append((x, y, pixmap.width(), pixmap.height()))
+            x += pixmap.width() if index == called_index else max(1, pixmap.width() - 5)
+            if last_tile_gap and len(tiles) > 1 and index == len(tiles) - 2:
+                x += last_tile_gap
+
+        if stacked_tile is not None and stacked_on_index is not None and 0 <= stacked_on_index < len(tile_positions):
+            stack_pixmap = self._tile_pixmap(stacked_tile, rotated=True)
+            base_x, base_y, base_w, _ = tile_positions[stacked_on_index]
+            stack_x = base_x + max(0, (base_w - stack_pixmap.width()) // 2)
+            stack_y = base_y + base_raise - stack_pixmap.height() - 8
+            painter.drawPixmap(stack_x, stack_y, stack_pixmap)
+
+        return x
+
+    def paintEvent(self, event):
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        baseline_bottom = self.height() - 2
+        x = 0
+        x = self._draw_sequence(
+            painter,
+            x,
+            baseline_bottom,
+            self.tehai_tiles,
+            base_raise=8,
+            highlight_last=self.highlight_last_tile,
+            last_tile_gap=5 if self.highlight_last_tile else 0,
+        )
+        x = self._draw_incoming_call_indicator(painter, x, baseline_bottom)
+        if self.fuuro_groups:
+            x += 12
+        for index, group in enumerate(self.fuuro_groups):
+            x = self._draw_sequence(
+                painter,
+                x,
+                baseline_bottom,
+                group.tiles,
+                group.called_tile_index,
+                group.stacked_tile,
+                group.stacked_on_index,
+                8,
+            )
+            if index != len(self.fuuro_groups) - 1:
+                x += 10
+        painter.end()
 
 
 class AnalysisWorker(QObject):
@@ -66,7 +431,7 @@ class AnalysisWorker(QObject):
             reports: list[EngineAnalysisResult] = []
             total_models = max(1, len(self.model_dirs))
             for model_index, model_dir in enumerate(self.model_dirs, start=1):
-                engine_name = Path(model_dir).name or f"engine_{model_index}"
+                engine_name = "Mortal"
                 analyzer_service = AnalyzerService(model_dir)
 
                 def bridge_progress(current: int, total: int, message: str):
@@ -98,6 +463,412 @@ class AnalysisWorker(QObject):
             self.finished.emit(None, exc)
 
 
+class KyokuDetailTab(QWidget):
+    DRAGON_TILES = {"h", "f", "c", "p"}
+
+    def __init__(self, kyoku: ReviewKyokuDetail, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.kyoku = kyoku
+        self.filtered_entries = list(kyoku.entries)
+
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["전체 장면", "불일치만", "실제 수 확률 <5%"])
+        self.filter_combo.currentIndexChanged.connect(self._populate)
+
+        self.prev_button = QPushButton("이전 장면")
+        self.next_button = QPushButton("다음 장면")
+        self.prev_button.clicked.connect(lambda: self._move_selection(-1))
+        self.next_button.clicked.connect(lambda: self._move_selection(1))
+
+        self.entry_table = QTableWidget(0, 5)
+        self.entry_table.setHorizontalHeaderLabels(["순", "직전 패", "실제 수", "확률", "상태"])
+        self.entry_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.entry_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.entry_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.entry_table.verticalHeader().setVisible(False)
+        self.entry_table.verticalHeader().setDefaultSectionSize(38)
+        self.entry_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.entry_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.entry_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.entry_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.entry_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.entry_table.itemSelectionChanged.connect(self._on_entry_changed)
+
+        self.summary_label = QLabel()
+        self.summary_label.setWordWrap(True)
+        self.summary_label.setTextFormat(Qt.TextFormat.RichText)
+        self.summary_label.setStyleSheet("color: #2d3748;")
+
+        self.compare_label = QLabel("-")
+        self.compare_label.setWordWrap(True)
+        self.compare_label.setTextFormat(Qt.TextFormat.RichText)
+        self.compare_label.setStyleSheet(
+            "padding: 8px 10px; border: 1px solid #cbd5e0; border-radius: 8px; background: #f8fafc;"
+        )
+
+        self.meta_label = QLabel("-")
+        self.meta_label.setWordWrap(True)
+        self.meta_label.setStyleSheet(
+            "padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 8px; background: #ffffff;"
+        )
+
+        self.hand_panel = QWidget()
+        self.hand_panel.setFixedHeight(88)
+        self.hand_panel.setStyleSheet(
+            "border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc;"
+        )
+        self.hand_panel_layout = QVBoxLayout(self.hand_panel)
+        self.hand_panel_layout.setContentsMargins(6, 0, 6, 0)
+        self.hand_panel_layout.setSpacing(0)
+
+        self.candidate_table = QTableWidget(0, 4)
+        self.candidate_table.setHorizontalHeaderLabels(["실제", "확률", "Q값", "행동"])
+        self.candidate_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.candidate_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.candidate_table.verticalHeader().setVisible(False)
+        self.candidate_table.verticalHeader().setDefaultSectionSize(24)
+        self.candidate_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.candidate_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.candidate_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.candidate_table.horizontalHeader().setStretchLastSection(True)
+        self.candidate_table.setColumnWidth(0, 48)
+        self.candidate_table.setColumnWidth(1, 90)
+        self.candidate_table.setColumnWidth(2, 84)
+
+        self._build_ui()
+        self._populate()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.addWidget(self.summary_label)
+
+        top_bar = QHBoxLayout()
+        top_bar.addWidget(QLabel("장면 필터"))
+        top_bar.addWidget(self.filter_combo, 1)
+        top_bar.addWidget(self.prev_button)
+        top_bar.addWidget(self.next_button)
+        root.addLayout(top_bar)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
+        left_layout.addWidget(self.entry_table)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
+        right_layout.addWidget(self.compare_label)
+        right_layout.addWidget(self.meta_label)
+        right_layout.addWidget(self.hand_panel)
+        right_layout.addWidget(self.candidate_table)
+
+        splitter.addWidget(left)
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 4)
+        root.addWidget(splitter, 1)
+
+    def _populate(self):
+        mode = self.filter_combo.currentIndex()
+        if mode == 1:
+            self.filtered_entries = [entry for entry in self.kyoku.entries if not entry.is_equal]
+        elif mode == 2:
+            self.filtered_entries = [entry for entry in self.kyoku.entries if entry.actual_probability < 0.05]
+        else:
+            self.filtered_entries = list(self.kyoku.entries)
+
+        self.summary_label.setText(
+            "<table width='100%' cellspacing='0' cellpadding='0'>"
+            "<tr>"
+            f"<td><b>{self.kyoku.round_label}</b></td>"
+            f"<td align='right'><b>{self.kyoku.seat_label}</b></td>"
+            "</tr>"
+            "</table>"
+            f"점수: {self.kyoku.score_text}<br>"
+            f"종료: {self.kyoku.end_summary}"
+        )
+        self.entry_table.setRowCount(len(self.filtered_entries))
+        for row_index, entry in enumerate(self.filtered_entries):
+            values = [
+                f"{entry.junme}순",
+                "",
+                entry.actual_action_text,
+                f"{entry.actual_probability * 100:.4f}%",
+                "일치" if entry.is_equal else "불일치",
+            ]
+            for col_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if not entry.is_equal:
+                    item.setBackground(QColor("#fee2e2"))
+                    item.setForeground(QColor("#7f1d1d"))
+                if col_index == 2:
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    item.setForeground(QColor("#9b2c2c") if not entry.is_equal else QColor("#276749"))
+                if col_index in {0, 3, 4}:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.entry_table.setItem(row_index, col_index, item)
+            tile_widget = self._make_tile_widget(entry.tile, compact=True)
+            tile_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cell = QWidget()
+            cell_layout = QVBoxLayout(cell)
+            cell_layout.setContentsMargins(0, 0, 0, 0)
+            cell_layout.addWidget(tile_widget, 0, Qt.AlignmentFlag.AlignCenter)
+            self.entry_table.setCellWidget(row_index, 1, cell)
+        self.prev_button.setEnabled(bool(self.filtered_entries))
+        self.next_button.setEnabled(bool(self.filtered_entries))
+        if self.filtered_entries:
+            self.entry_table.selectRow(0)
+        else:
+            self.compare_label.setText("-")
+            self.meta_label.setText("-")
+            self._render_hand_panel(None)
+            self.candidate_table.setRowCount(0)
+
+    def _on_entry_changed(self):
+        row_index = self.entry_table.currentRow()
+        if row_index < 0 or row_index >= len(self.filtered_entries):
+            return
+        entry = self.filtered_entries[row_index]
+        flags = ", ".join(entry.flags) if entry.flags else "-"
+        actual_color = "#c53030" if not entry.is_equal else "#2f855a"
+        self.compare_label.setText(
+            f"<b>실제 수</b>: <span style='color:{actual_color}; font-weight:700; background:#fff5f5; padding:1px 4px; border-radius:4px;'>{entry.actual_action_text}</span><br>"
+            f"<b>AI의 선택</b>: {entry.expected_action_text}<br>"
+            f"<b>AI 1순위</b>: {entry.best_action_text}"
+        )
+        self.meta_label.setText(
+            f"<b>순서</b>: {entry.round_label} / {entry.junme}순<br>"
+            f"<b>직전 패</b>: {entry.tile}<br>"
+            f"<b>향텐</b>: {'-' if entry.shanten is None else entry.shanten}<br>"
+            f"<b>남은 패산</b>: {entry.tiles_left}<br>"
+            f"<b>실제 수 확률</b>: {entry.actual_probability * 100:.6f}%<br>"
+            f"<b>실제 수 Q값</b>: {entry.actual_q_value:.6f}<br>"
+            f"<b>판정</b>: {'일치' if entry.is_equal else '불일치'}<br>"
+            f"<b>플래그</b>: {flags}"
+        )
+        self._render_hand_panel(entry)
+        self.candidate_table.setRowCount(len(entry.candidates))
+        for row_index, candidate in enumerate(entry.candidates):
+            values = [
+                "실제" if candidate.is_actual else "",
+                f"{candidate.probability * 100:.6f}%",
+                f"{candidate.q_value:.6f}",
+                candidate.action_text,
+            ]
+            for col_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col_index in {1, 2}:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if candidate.is_actual:
+                    item.setBackground(QColor("#fef3c7"))
+                    item.setForeground(QColor("#92400e"))
+                self.candidate_table.setItem(row_index, col_index, item)
+
+    def _move_selection(self, delta: int):
+        row = self.entry_table.currentRow()
+        if row < 0:
+            return
+        next_row = max(0, min(self.entry_table.rowCount() - 1, row + delta))
+        self.entry_table.selectRow(next_row)
+
+    @staticmethod
+    def _tile_to_unicode(tile: str) -> str:
+        return tile_to_unicode(tile)
+
+    @staticmethod
+    def _is_red_five(tile: str) -> bool:
+        return is_red_five(tile)
+
+    @classmethod
+    def _is_dragon_tile(cls, tile: str) -> bool:
+        lower = str(tile).lower().strip()
+        return len(lower) == 1 and lower in cls.DRAGON_TILES
+
+    @classmethod
+    def _tile_font_family(cls) -> str:
+        return tile_font_family()
+
+    @staticmethod
+    def _tile_text(tile: str) -> str:
+        return tile_to_unicode(tile)
+
+    @classmethod
+    def _render_single_tile_chip(cls, tile: str, compact: bool = False, called: bool = False) -> str:
+        is_red = cls._is_red_five(tile)
+        is_dragon = cls._is_dragon_tile(tile)
+        bg = "#fda4af" if is_red else "#f8fafc"
+        fg = "#991b1b" if is_red else "#1f2937"
+        border = "#dc2626" if is_red else "#cbd5e0"
+        font_size = 21 if compact else 24
+        if is_dragon:
+            font_size -= 2
+        width = "36px" if compact else "34px"
+        height = "34px" if compact else "42px"
+        transform = " transform:rotate(90deg);" if called else ""
+        display = "inline-flex"
+        vertical = "vertical-align:middle;"
+        if called:
+            width, height = height, width
+        return (
+            f"<span style=\"display:{display}; align-items:center; justify-content:center; {vertical}"
+            f"width:{width}; height:{height}; margin:2px; border:1px solid {border}; border-radius:6px; "
+            f"background:{bg}; color:{fg}; font-size:{font_size}px; line-height:1; "
+            f"font-weight:{'700' if is_red else '500'}; font-family:'Segoe UI Symbol','Noto Sans KR',sans-serif;{transform}\">"
+            f"{cls._tile_to_unicode(tile)}</span>"
+        )
+
+    @classmethod
+    def _tile_pixmap(cls, tile: str, compact: bool = False, called: bool = False) -> QPixmap:
+        is_red = cls._is_red_five(tile)
+        is_dragon = cls._is_dragon_tile(tile)
+        bg = QColor("#fda4af" if is_red else "#f8fafc")
+        fg = QColor("#991b1b" if is_red else "#1f2937")
+        border = QColor("#dc2626" if is_red else "#cbd5e0")
+        width = 36 if compact else 34
+        height = 34 if compact else 42
+        font_size = 21 if compact else 24
+        if is_dragon:
+            font_size -= 2
+        text = cls._tile_text(tile)
+        family = cls._tile_font_family()
+        pixmap = QPixmap(width, height)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(QBrush(bg))
+        painter.drawRoundedRect(0, 0, width - 1, height - 1, 6, 6)
+        font = QFont(family, pointSize=font_size)
+        font.setBold(is_red)
+        painter.setFont(font)
+        painter.setPen(QPen(fg))
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, text)
+        painter.end()
+
+        if called:
+            transform = QTransform()
+            transform.rotate(90)
+            pixmap = pixmap.transformed(transform, Qt.TransformationMode.SmoothTransformation)
+        return pixmap
+
+    @classmethod
+    def _make_tile_widget(cls, tile: str, compact: bool = False, called: bool = False) -> QLabel:
+        label = QLabel()
+        pixmap = cls._tile_pixmap(tile, compact=compact, called=called)
+        label.setPixmap(pixmap)
+        label.setFixedSize(pixmap.size())
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        return label
+
+    @classmethod
+    def _render_tiles(cls, tiles: list[str]) -> str:
+        if not tiles:
+            return "-"
+        return "".join(cls._render_single_tile_chip(tile) for tile in tiles)
+
+    @classmethod
+    def _render_fuuro_groups(cls, groups: list[ReviewFuuroGroup], fallback_text: str) -> str:
+        if not groups:
+            return fallback_text
+        return "".join(
+            f"<div style='margin-top:6px;'><b>{group.label or f'후로 {index}'}</b><br>{''.join(cls._render_single_tile_chip(tile, called=(group.called_tile_index == tile_index)) for tile_index, tile in enumerate(group.tiles))}</div>"
+            for index, group in enumerate(groups, start=1)
+        )
+
+    def _clear_layout(self, layout: QVBoxLayout | QHBoxLayout):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                self._clear_layout(child_layout)
+
+    def _render_hand_panel(self, entry):
+        self._clear_layout(self.hand_panel_layout)
+        if entry is None:
+            self.hand_panel_layout.addWidget(QLabel("-"))
+            return
+
+        hand_title = QLabel("손패")
+        hand_title.setStyleSheet("font-weight:700; color:#2d3748;")
+        hand_title.setFixedHeight(14)
+        self.hand_panel_layout.addWidget(hand_title)
+
+        display_fuuro_groups = entry.display_fuuro_groups or entry.fuuro_groups
+
+        merged_row = QHBoxLayout()
+        merged_row.setContentsMargins(0, 0, 0, 0)
+        merged_row.setSpacing(8)
+        merged_row.addWidget(
+            HandCompositeStrip(
+                entry.display_tehai_tiles or entry.tehai_tiles,
+                display_fuuro_groups,
+                font_px=30,
+                highlight_last_tile=entry.highlight_last_tile,
+                incoming_call_tile=entry.incoming_call_tile,
+                incoming_call_source=entry.incoming_call_source,
+            ),
+            0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+        )
+        merged_row.addStretch(1)
+        self.hand_panel_layout.addLayout(merged_row)
+
+
+class GameDetailWindow(QMainWindow):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Koromo Grapher - 상세 대국정보")
+        self.resize(1320, 900)
+        self.header_label = QLabel("상세 리뷰를 불러오는 중...")
+        self.header_label.setWordWrap(True)
+        self.header_label.setStyleSheet(
+            "padding: 8px 10px; border: 1px solid #cbd5e0; border-radius: 8px; background: #f8fafc;"
+        )
+        self.tabs = QTabWidget()
+
+        root = QWidget()
+        layout = QVBoxLayout(root)
+        layout.addWidget(self.header_label)
+        layout.addWidget(self.tabs, 1)
+        self.setCentralWidget(root)
+
+    def render_detail(
+        self,
+        game: GameAnalysis,
+        report: EngineAnalysisResult,
+        review_path: Path,
+        detail: ReviewGameDetail,
+    ):
+        self.setWindowTitle(f"Koromo Grapher - 상세 대국정보 - {game.game_id}")
+        match_rate = 0.0
+        if detail.total_reviewed:
+            match_rate = detail.total_matches * 100.0 / detail.total_reviewed
+        self.header_label.setText(
+            "<table width='100%' cellspacing='0' cellpadding='0'>"
+            f"<tr><td colspan='2'><b>대국 ID</b>: {game.game_id}</td></tr>"
+            f"<tr><td colspan='2'><b>엔진</b>: {report.engine_name}</td></tr>"
+            f"<tr><td colspan='2'><b>리뷰 파일</b>: {review_path.name}</td></tr>"
+            "<tr>"
+            f"<td><b>리뷰 Rating</b>: {detail.rating:.2f} / "
+            f"<b>검토 수</b>: {detail.total_reviewed} / "
+            f"<b>일치 수</b>: {detail.total_matches} ({match_rate:.2f}%)</td>"
+            f"<td align='right'><b>mjai-reviewer 버전</b>: {detail.version}</td>"
+            "</tr>"
+            "</table>"
+        )
+        self.tabs.clear()
+        for kyoku in detail.kyokus:
+            self.tabs.addTab(KyokuDetailTab(kyoku, self), kyoku.round_label)
+
 class ResultWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -106,6 +877,9 @@ class ResultWindow(QMainWindow):
 
         self.current_reports: list[EngineAnalysisResult] = []
         self.current_games: list[GameAnalysis] = []
+        self.current_report: EngineAnalysisResult | None = None
+        self.cache_dir = Path("koromo_review_gui_cache")
+        self.detail_window: GameDetailWindow | None = None
 
         self.summary_labels = {
             "engine_name": QLabel("-"),
@@ -134,10 +908,11 @@ class ResultWindow(QMainWindow):
         }
         self.detail_labels["notes"].setWordWrap(True)
 
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels([
-            "대국 ID", "판단 수", "Rating", "AI 일치율", "Top-3 일치율", "악수율 <5%", "악수율 <10%", "메모",
+            "대국 ID", "판단 수", "Rating", "AI 일치율", "Top-3 일치율", "악수율 <5%", "악수율 <10%", "메모", "상세",
         ])
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setDefaultSectionSize(26)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -148,12 +923,15 @@ class ResultWindow(QMainWindow):
         self.table.setColumnWidth(4, 92)
         self.table.setColumnWidth(5, 82)
         self.table.setColumnWidth(6, 86)
+        self.table.setColumnWidth(8, 74)
         self.table.itemSelectionChanged.connect(self.on_table_selection_changed)
+        self.table.itemDoubleClicked.connect(self.open_selected_game_detail)
 
         self.worst_table = QTableWidget(0, 6)
         self.worst_table.setHorizontalHeaderLabels([
             "국 / 순", "실제 수 확률", "실제 수", "AI 1순위", "Top-1", "Top-3",
         ])
+        self.worst_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.worst_table.horizontalHeader().setStretchLastSection(True)
         self.worst_table.verticalHeader().setDefaultSectionSize(24)
         self.worst_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -265,6 +1043,7 @@ class ResultWindow(QMainWindow):
             self._clear_summary()
 
     def apply_report(self, report: EngineAnalysisResult):
+        self.current_report = report
         stats = report.stats
         self.summary_labels["engine_name"].setText(report.engine_name)
         info_lines = [report.model_dir]
@@ -295,6 +1074,9 @@ class ResultWindow(QMainWindow):
             ]
             for col_index, value in enumerate(items):
                 self.table.setItem(row_index, col_index, QTableWidgetItem(value))
+            detail_button = QPushButton("상세 보기")
+            detail_button.clicked.connect(lambda _checked=False, idx=row_index: self.open_game_detail_at_row(idx))
+            self.table.setCellWidget(row_index, 8, detail_button)
 
         self._update_chart(ordered_games, report.engine_name)
         if ordered_games:
@@ -309,6 +1091,44 @@ class ResultWindow(QMainWindow):
             self._clear_game_detail()
             return
         self._show_game_detail(self.current_games[row_index])
+
+    def set_cache_dir(self, cache_dir: str | Path):
+        self.cache_dir = Path(cache_dir)
+
+    def open_game_detail_at_row(self, row_index: int):
+        if row_index < 0 or row_index >= len(self.current_games):
+            return
+        if self.current_report is None:
+            QMessageBox.warning(self, "상세 리뷰 열기 실패", "현재 선택된 엔진 정보가 없습니다.")
+            return
+
+        self.table.selectRow(row_index)
+        game = self.current_games[row_index]
+        review_path = self._review_json_path(game, self.current_report)
+        if not review_path.exists():
+            QMessageBox.warning(self, "상세 리뷰 열기 실패", f"상세 리뷰 JSON을 찾지 못했습니다: {review_path}")
+            return
+
+        try:
+            detail = parse_review_detail(review_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "상세 리뷰 열기 실패", str(exc))
+            return
+
+        if self.detail_window is None:
+            self.detail_window = GameDetailWindow(self)
+        self.detail_window.render_detail(game, self.current_report, review_path, detail)
+        self.detail_window.show()
+        self.detail_window.raise_()
+        self.detail_window.activateWindow()
+
+    def open_selected_game_detail(self, *_args):
+        self.open_game_detail_at_row(self.table.currentRow())
+
+    def _review_json_path(self, game: GameAnalysis, report: EngineAnalysisResult) -> Path:
+        if not game.uuid:
+            return self.cache_dir / f"{game.game_id}.{Path(report.model_dir).name}.review.json"
+        return self.cache_dir / f"{game.uuid}.tenhou6.{Path(report.model_dir).name}.review.json"
 
     def _show_game_detail(self, game: GameAnalysis):
         self.detail_labels["game_id"].setText(game.game_id)
@@ -428,12 +1248,12 @@ class MainWindow(QMainWindow):
         self.recent_games_input.setSpecialValueText("전체")
 
         self.model_combo = QComboBox()
-        self.model_combo.setToolTip("분석에 사용할 모델 폴더를 실행 경로 기준 /model 아래에 넣어 주세요.")
+        self.model_combo.setToolTip("분석에 사용할 엔진 폴더를 실행 경로 기준 /model 아래에 넣어 주세요.")
         self.refresh_models_button = QPushButton("갱신")
         self.refresh_models_button.clicked.connect(self.populate_models_from_repo)
-        self.model_hint_label = QLabel("모델은 /model 폴더에서 자동으로 읽습니다.")
+        self.model_hint_label = QLabel("분석 엔진은 /model 폴더에서 자동으로 읽습니다.")
         self.model_hint_label.setWordWrap(True)
-        self.model_hint_label.setToolTip("예: Koromo_Grapher/model/모델폴더/mortal.pth")
+        self.model_hint_label.setToolTip("예: Koromo_Grapher/model/엔진폴더/mortal.pth")
         self.model_hint_label.setStyleSheet("color: #2b6cb0; font-size: 11px;")
 
         self.run_button = QPushButton("분석 시작")
@@ -473,14 +1293,14 @@ class MainWindow(QMainWindow):
         controls_form.addRow(self.cn_warning_label)
         controls_form.addRow("최근 N판 (0=전체)", self.recent_games_input)
 
-        model_group = QGroupBox("분석 모델")
+        model_group = QGroupBox("분석 엔진")
         model_layout = QVBoxLayout(model_group)
         model_row = QHBoxLayout()
         model_row.addWidget(self.model_combo, 1)
         model_row.addWidget(self.refresh_models_button, 0)
         model_layout.addLayout(model_row)
         model_layout.addWidget(self.model_hint_label)
-        controls_form.addRow("모델", model_group)
+        controls_form.addRow("분석 엔진", model_group)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.run_button)
@@ -597,7 +1417,7 @@ class MainWindow(QMainWindow):
 
         model_dirs = self._selected_model_dirs()
         if not model_dirs:
-            QMessageBox.warning(self, "입력 필요", "분석할 모델 폴더를 하나 준비해 주세요.")
+            QMessageBox.warning(self, "입력 필요", "분석할 엔진 폴더를 하나 준비해 주세요.")
             return
 
         recent_games = self.recent_games_input.value() or None
@@ -655,6 +1475,7 @@ class MainWindow(QMainWindow):
             self.worker_thread = None
 
     def render_reports(self, reports: list[EngineAnalysisResult]):
+        self.result_window.set_cache_dir(self.cache_dir_input.text().strip())
         self.result_window.render_reports(reports)
 
     def save_session(self):
@@ -755,6 +1576,7 @@ class MainWindow(QMainWindow):
                     self.model_combo.setCurrentIndex(index)
                     break
         self.current_reports = session.reports
+        self.result_window.set_cache_dir(self.cache_dir_input.text().strip())
         self.render_reports(session.reports)
         self.show_result_window()
 
