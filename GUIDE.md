@@ -3,8 +3,9 @@
 <details>
 <summary>이미지</summary>
 <img src="image/main.png" width="800px">
-<img src="image/graph1.png" width="800px">
-<img src="image/graph2.png" width="800px">
+<img src="image/graph.png" width="800px">
+<img src="image/result.png" width="800px">
+<img src="image/detail.png" width="800px">
 </details>
 
 - [Koromo](http://amae-koromo.sapk.ch/) 링크 기준으로 Mahjong Soul 대국을 내려받아, 로컬 Mortal 엔진으로 복기 및 통계를 보여주는 도구입니다.

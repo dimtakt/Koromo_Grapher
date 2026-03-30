@@ -431,7 +431,7 @@ class AnalysisWorker(QObject):
             reports: list[EngineAnalysisResult] = []
             total_models = max(1, len(self.model_dirs))
             for model_index, model_dir in enumerate(self.model_dirs, start=1):
-                engine_name = "Mortal"
+                engine_name = Path(model_dir).name or f"engine_{model_index}"
                 analyzer_service = AnalyzerService(model_dir)
 
                 def bridge_progress(current: int, total: int, message: str):
@@ -485,6 +485,9 @@ class KyokuDetailTab(QWidget):
         self.entry_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.entry_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.entry_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.entry_table.setStyleSheet(
+            "QTableWidget::item:selected { background:#ede9fe; color:#4c1d95; }"
+        )
         self.entry_table.verticalHeader().setVisible(False)
         self.entry_table.verticalHeader().setDefaultSectionSize(38)
         self.entry_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -613,7 +616,7 @@ class KyokuDetailTab(QWidget):
                 if col_index in {0, 3, 4}:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.entry_table.setItem(row_index, col_index, item)
-            tile_widget = self._make_tile_widget(entry.tile, compact=True)
+            tile_widget = self._make_plain_tile_widget(entry.tile, compact=True)
             tile_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
             cell = QWidget()
             cell_layout = QVBoxLayout(cell)
@@ -624,6 +627,7 @@ class KyokuDetailTab(QWidget):
         self.next_button.setEnabled(bool(self.filtered_entries))
         if self.filtered_entries:
             self.entry_table.selectRow(0)
+            self._update_entry_tile_cell_styles(0)
         else:
             self.compare_label.setText("-")
             self.meta_label.setText("-")
@@ -634,6 +638,7 @@ class KyokuDetailTab(QWidget):
         row_index = self.entry_table.currentRow()
         if row_index < 0 or row_index >= len(self.filtered_entries):
             return
+        self._update_entry_tile_cell_styles(row_index)
         entry = self.filtered_entries[row_index]
         flags = ", ".join(entry.flags) if entry.flags else "-"
         actual_color = "#c53030" if not entry.is_equal else "#2f855a"
@@ -676,6 +681,24 @@ class KyokuDetailTab(QWidget):
             return
         next_row = max(0, min(self.entry_table.rowCount() - 1, row + delta))
         self.entry_table.selectRow(next_row)
+
+    def _update_entry_tile_cell_styles(self, selected_row: int):
+        for row_index, entry in enumerate(self.filtered_entries):
+            cell = self.entry_table.cellWidget(row_index, 1)
+            if cell is None:
+                continue
+            if row_index == selected_row:
+                bg = "#ede9fe"
+                border = "#c4b5fd"
+            elif not entry.is_equal:
+                bg = "#fee2e2"
+                border = "#fecaca"
+            else:
+                bg = "transparent"
+                border = "transparent"
+            cell.setStyleSheet(
+                f"background:{bg}; border:1px solid {border}; border-radius:6px;"
+            )
 
     @staticmethod
     def _tile_to_unicode(tile: str) -> str:
@@ -763,6 +786,44 @@ class KyokuDetailTab(QWidget):
         pixmap = cls._tile_pixmap(tile, compact=compact, called=called)
         label.setPixmap(pixmap)
         label.setFixedSize(pixmap.size())
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        return label
+
+    @classmethod
+    def _glyph_only_pixmap(cls, tile: str, compact: bool = False) -> QPixmap:
+        is_red = cls._is_red_five(tile)
+        is_dragon = cls._is_dragon_tile(tile)
+        fg = QColor("#c53030" if is_red else "#1f2937")
+        font_size = 24 if compact else 30
+        if is_dragon:
+            font_size -= 2
+        text = cls._tile_text(tile)
+        family = cls._tile_font_family()
+        font = QFont(family)
+        font.setPixelSize(font_size)
+        source = QPixmap(max(1, font_size + 10), max(1, font_size + 12))
+        source.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(source)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addText(0.0, 0.0, font, text)
+        bounds = path.boundingRect()
+        transform = QTransform()
+        transform.translate(-bounds.left(), 1.0 - bounds.top())
+        path = transform.map(path)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(fg))
+        painter.drawPath(path)
+        painter.end()
+        return TileGlyphStrip._trim_transparent(source)
+
+    @classmethod
+    def _make_plain_tile_widget(cls, tile: str, compact: bool = False) -> QLabel:
+        label = QLabel()
+        pixmap = cls._glyph_only_pixmap(tile, compact=compact)
+        label.setPixmap(pixmap)
+        label.setMinimumSize(max(28, pixmap.width()), max(32, pixmap.height()))
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         return label
 
@@ -913,17 +974,19 @@ class ResultWindow(QMainWindow):
             "대국 ID", "판단 수", "Rating", "AI 일치율", "Top-3 일치율", "악수율 <5%", "악수율 <10%", "메모", "상세",
         ])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.verticalHeader().setDefaultSectionSize(26)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setColumnWidth(0, 170)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 136)
         self.table.setColumnWidth(1, 64)
         self.table.setColumnWidth(2, 70)
         self.table.setColumnWidth(3, 86)
         self.table.setColumnWidth(4, 92)
         self.table.setColumnWidth(5, 82)
         self.table.setColumnWidth(6, 86)
-        self.table.setColumnWidth(8, 74)
+        self.table.setColumnWidth(8, 162)
         self.table.itemSelectionChanged.connect(self.on_table_selection_changed)
         self.table.itemDoubleClicked.connect(self.open_selected_game_detail)
 
@@ -1074,7 +1137,7 @@ class ResultWindow(QMainWindow):
             ]
             for col_index, value in enumerate(items):
                 self.table.setItem(row_index, col_index, QTableWidgetItem(value))
-            detail_button = QPushButton("상세 보기")
+            detail_button = QPushButton("보기")
             detail_button.clicked.connect(lambda _checked=False, idx=row_index: self.open_game_detail_at_row(idx))
             self.table.setCellWidget(row_index, 8, detail_button)
 
