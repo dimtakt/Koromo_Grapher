@@ -650,7 +650,7 @@ class KyokuDetailTab(QWidget):
         self.meta_label.setText(
             f"<b>순서</b>: {entry.round_label} / {entry.junme}순<br>"
             f"<b>직전 패</b>: {entry.tile}<br>"
-            f"<b>향텐</b>: {'-' if entry.shanten is None else entry.shanten}<br>"
+            f"<b>샹텐</b>: {'-' if entry.shanten is None else entry.shanten}<br>"
             f"<b>남은 패산</b>: {entry.tiles_left}<br>"
             f"<b>실제 수 확률</b>: {entry.actual_probability * 100:.6f}%<br>"
             f"<b>실제 수 Q값</b>: {entry.actual_q_value:.6f}<br>"
@@ -1189,9 +1189,27 @@ class ResultWindow(QMainWindow):
         self.open_game_detail_at_row(self.table.currentRow())
 
     def _review_json_path(self, game: GameAnalysis, report: EngineAnalysisResult) -> Path:
-        if not game.uuid:
-            return self.cache_dir / f"{game.game_id}.{Path(report.model_dir).name}.review.json"
-        return self.cache_dir / f"{game.uuid}.tenhou6.{Path(report.model_dir).name}.review.json"
+        model_name = Path(report.model_dir).name
+        exact_name = (
+            f"{game.game_id}.{model_name}.review.json"
+            if not game.uuid
+            else f"{game.uuid}.tenhou6.{model_name}.review.json"
+        )
+        exact_path = self.cache_dir / exact_name
+        if exact_path.exists():
+            return exact_path
+
+        patterns: list[str] = []
+        if game.uuid:
+            patterns.append(f"{game.uuid}.tenhou6.*.review.json")
+        patterns.append(f"{game.game_id}.*.review.json")
+
+        for pattern in patterns:
+            matches = sorted(self.cache_dir.glob(pattern))
+            if matches:
+                return matches[0]
+
+        return exact_path
 
     def _show_game_detail(self, game: GameAnalysis):
         self.detail_labels["game_id"].setText(game.game_id)

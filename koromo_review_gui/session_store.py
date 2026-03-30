@@ -21,7 +21,7 @@ class AnalysisSessionStore:
 
     def load(self, path: str | Path) -> AnalysisSession:
         source = Path(path)
-        payload = json.loads(source.read_text(encoding="utf-8"))
+        payload = json.loads(source.read_text(encoding="utf-8-sig"))
         reports_payload = payload.get("reports")
         if reports_payload is None and "stats" in payload:
             reports_payload = [
