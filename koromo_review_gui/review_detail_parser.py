@@ -100,6 +100,18 @@ def _format_deltas(deltas: list[object], focus_actor: int | None) -> str:
     return "[" + ", ".join(parts) + "]"
 
 
+def _format_scores(scores: list[object], focus_actor: int | None) -> str:
+    if not scores:
+        return "-"
+    parts: list[str] = []
+    for index, score in enumerate(scores):
+        text = str(score)
+        if focus_actor is not None and index == focus_actor:
+            text = f"<b>{text}</b>"
+        parts.append(text)
+    return ", ".join(parts)
+
+
 def _format_end_status(items: list[dict], focus_actor: int | None = None) -> str:
     parts: list[str] = []
     for item in items or []:
@@ -260,7 +272,6 @@ def parse_review_detail(path: str | Path) -> ReviewGameDetail:
     for kyoku in review.get("kyokus") or []:
         kyoku_index = int(kyoku.get("kyoku", 0))
         round_label = _round_label(kyoku_index, int(kyoku.get("honba", 0)))
-        score_text = ", ".join(str(score) for score in (kyoku.get("relative_scores") or [])) or "-"
         entries: list[ReviewEntryDetail] = []
 
         raw_entries = kyoku.get("entries") or []
@@ -379,6 +390,7 @@ def parse_review_detail(path: str | Path) -> ReviewGameDetail:
             )
 
         player_index = next((entry.actor for entry in entries if entry.actor is not None), None)
+        score_text = _format_scores(kyoku.get("relative_scores") or [], player_index)
         kyokus.append(
             ReviewKyokuDetail(
                 round_label=round_label,

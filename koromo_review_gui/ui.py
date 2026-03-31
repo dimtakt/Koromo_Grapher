@@ -480,8 +480,8 @@ class KyokuDetailTab(QWidget):
         self.prev_button.clicked.connect(lambda: self._move_selection(-1))
         self.next_button.clicked.connect(lambda: self._move_selection(1))
 
-        self.entry_table = QTableWidget(0, 5)
-        self.entry_table.setHorizontalHeaderLabels(["순", "직전 패", "실제 수", "확률", "상태"])
+        self.entry_table = QTableWidget(0, 6)
+        self.entry_table.setHorizontalHeaderLabels(["순", "직전 패", "실제 수", "AI 수", "확률", "상태"])
         self.entry_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.entry_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.entry_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -493,8 +493,9 @@ class KyokuDetailTab(QWidget):
         self.entry_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.entry_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.entry_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.entry_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.entry_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.entry_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.entry_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self.entry_table.itemSelectionChanged.connect(self._on_entry_changed)
 
         self.summary_label = QLabel()
@@ -600,6 +601,7 @@ class KyokuDetailTab(QWidget):
                 f"{entry.junme}순",
                 "",
                 entry.actual_action_text,
+                entry.expected_action_text,
                 f"{entry.actual_probability * 100:.4f}%",
                 "일치" if entry.is_equal else "불일치",
             ]
@@ -613,7 +615,9 @@ class KyokuDetailTab(QWidget):
                     font.setBold(True)
                     item.setFont(font)
                     item.setForeground(QColor("#9b2c2c") if not entry.is_equal else QColor("#276749"))
-                if col_index in {0, 3, 4}:
+                elif col_index == 3:
+                    item.setForeground(QColor("#1f4f99") if not entry.is_equal else QColor("#1f4f99"))
+                if col_index in {0, 4, 5}:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.entry_table.setItem(row_index, col_index, item)
             tile_widget = self._make_plain_tile_widget(entry.tile, compact=True)
