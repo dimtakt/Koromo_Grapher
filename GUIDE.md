@@ -63,6 +63,7 @@ powershell -ExecutionPolicy Bypass -File .\build_koromo_grapher_exe.ps1
 ## 실행
 - Release build: `release\KoromoGrapher\KoromoGrapher.exe`
 - Portable launch: `launch_koromo_reviewer.vbs`
+- Dev launch: `run_dev.cmd`
 
 ## 참고 / 포함 리포지토리
 
