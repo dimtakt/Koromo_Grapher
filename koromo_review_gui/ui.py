@@ -1,15 +1,19 @@
 ﻿from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtCore import QObject, QSize, QThread, Qt, Signal
+from PySide6.QtCore import QObject, QSize, QThread, Qt, Signal, QUrl
 from PySide6.QtGui import QAction, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QTransform
+from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QSplitter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QHeaderView,
@@ -39,6 +43,7 @@ from .review_detail_parser import ReviewFuuroGroup, ReviewGameDetail, ReviewKyok
 from .runtime_paths import repo_root
 from .services import AnalyzerService, KoromoService, MajsoulPaifuService
 from .session_store import AnalysisSessionStore
+from .tenhou_to_mjai_bridge import TenhouToMjaiBridge
 
 
 def tile_font_family() -> str:
@@ -466,10 +471,18 @@ class AnalysisWorker(QObject):
 class KyokuDetailTab(QWidget):
     DRAGON_TILES = {"h", "f", "c", "p"}
 
-    def __init__(self, kyoku: ReviewKyokuDetail, parent: QWidget | None = None):
+    def __init__(
+        self,
+        kyoku: ReviewKyokuDetail,
+        parent: QWidget | None = None,
+        *,
+        replay_callback=None,
+        replay_available: bool = False,
+    ):
         super().__init__(parent)
         self.kyoku = kyoku
         self.filtered_entries = list(kyoku.entries)
+        self.replay_callback = replay_callback
 
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["전체 장면", "불일치만", "실제 수 확률 <5%"])
@@ -539,6 +552,10 @@ class KyokuDetailTab(QWidget):
         self.candidate_table.setColumnWidth(1, 90)
         self.candidate_table.setColumnWidth(2, 84)
 
+        self.replay_button = QPushButton("현재 순 Tenhou Replay 보기")
+        self.replay_button.setEnabled(replay_available)
+        self.replay_button.clicked.connect(self._open_replay)
+
         self._build_ui()
         self._populate()
 
@@ -569,6 +586,7 @@ class KyokuDetailTab(QWidget):
         right_layout.addWidget(self.meta_label)
         right_layout.addWidget(self.hand_panel)
         right_layout.addWidget(self.candidate_table)
+        right_layout.addWidget(self.replay_button)
 
         splitter.addWidget(left)
         splitter.addWidget(right)
@@ -632,18 +650,42 @@ class KyokuDetailTab(QWidget):
         if self.filtered_entries:
             self.entry_table.selectRow(0)
             self._update_entry_tile_cell_styles(0)
+            self._update_replay_button_state()
         else:
             self.compare_label.setText("-")
             self.meta_label.setText("-")
             self._render_hand_panel(None)
             self.candidate_table.setRowCount(0)
+            self._update_replay_button_state()
+
+    def _open_replay(self):
+        if self.replay_callback is not None:
+            row_index = self.entry_table.currentRow()
+            entry = None
+            if 0 <= row_index < len(self.filtered_entries):
+                entry = self.filtered_entries[row_index]
+            self.replay_callback(self.kyoku, entry)
+
+    def _update_replay_button_state(self):
+        row_index = self.entry_table.currentRow()
+        entry = None
+        if 0 <= row_index < len(self.filtered_entries):
+            entry = self.filtered_entries[row_index]
+        enabled = (
+            self.replay_callback is not None
+            and entry is not None
+            and entry.actual_action_kind == "dahai"
+        )
+        self.replay_button.setEnabled(enabled)
 
     def _on_entry_changed(self):
         row_index = self.entry_table.currentRow()
         if row_index < 0 or row_index >= len(self.filtered_entries):
+            self._update_replay_button_state()
             return
         self._update_entry_tile_cell_styles(row_index)
         entry = self.filtered_entries[row_index]
+        self._update_replay_button_state()
         flags = ", ".join(entry.flags) if entry.flags else "-"
         actual_color = "#c53030" if not entry.is_equal else "#2f855a"
         self.compare_label.setText(
@@ -899,6 +941,10 @@ class GameDetailWindow(QMainWindow):
             "padding: 8px 10px; border: 1px solid #cbd5e0; border-radius: 8px; background: #f8fafc;"
         )
         self.tabs = QTabWidget()
+        self.replay_dialog: QDialog | None = None
+        self.replay_view: QWebEngineView | None = None
+        self.tenhou_payload: dict | None = None
+        self.mjai_kyoku_events: list[list[tuple[int, dict]]] | None = None
 
         root = QWidget()
         layout = QVBoxLayout(root)
@@ -930,9 +976,148 @@ class GameDetailWindow(QMainWindow):
             "</tr>"
             "</table>"
         )
+        self.tenhou_payload = self._load_tenhou_payload(review_path)
+        self.mjai_kyoku_events = self._load_mjai_kyoku_events(review_path)
         self.tabs.clear()
         for kyoku in detail.kyokus:
-            self.tabs.addTab(KyokuDetailTab(kyoku, self), kyoku.round_label)
+            self.tabs.addTab(
+                KyokuDetailTab(
+                    kyoku,
+                    self,
+                    replay_callback=self.open_tenhou_replay,
+                    replay_available=self.tenhou_payload is not None,
+                ),
+                kyoku.round_label,
+            )
+
+    @staticmethod
+    def _tenhou_json_path_from_review(review_path: Path) -> Path:
+        marker = ".tenhou6."
+        name = review_path.name
+        if marker in name:
+            prefix = name.split(marker, 1)[0]
+            candidate = review_path.with_name(f"{prefix}.tenhou6.json")
+            if candidate.exists():
+                return candidate
+        game_prefix = name.split(".", 1)[0]
+        matches = sorted(review_path.parent.glob(f"{game_prefix}*.tenhou6.json"))
+        return matches[0] if matches else review_path.with_suffix(".tenhou6.json")
+
+    def _load_tenhou_payload(self, review_path: Path) -> dict | None:
+        tenhou_path = self._tenhou_json_path_from_review(review_path)
+        if not tenhou_path.exists():
+            return None
+        try:
+            return json.loads(tenhou_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _split_mjai_events_by_kyoku(events: list[dict]) -> list[list[tuple[int, dict]]]:
+        kyokus: list[list[tuple[int, dict]]] = []
+        current: list[dict] = []
+        for event in events:
+            event_type = str(event.get("type", ""))
+            if event_type == "start_kyoku":
+                current = [event]
+            elif current:
+                current.append(event)
+                if event_type == "end_kyoku":
+                    kyokus.append(list(enumerate(current)))
+                    current = []
+        return kyokus
+
+    def _load_mjai_kyoku_events(self, review_path: Path) -> list[list[tuple[int, dict]]] | None:
+        tenhou_path = self._tenhou_json_path_from_review(review_path)
+        if not tenhou_path.exists():
+            return None
+        mjai_path = tenhou_path.with_suffix(".mjai.jsonl")
+        try:
+            if not mjai_path.exists() or mjai_path.stat().st_mtime < tenhou_path.stat().st_mtime:
+                bridge = TenhouToMjaiBridge()
+                bridge.convert(tenhou_path, mjai_path)
+            raw_events: list[dict] = []
+            for line in mjai_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                raw_events.append(json.loads(line))
+            return self._split_mjai_events_by_kyoku(raw_events)
+        except Exception:
+            return None
+
+    def _compute_tenhou_tj(self, kyoku: ReviewKyokuDetail, selected_entry) -> int | None:
+        if (
+            selected_entry is None
+            or selected_entry.actual_action_kind != "dahai"
+            or selected_entry.actor is None
+            or self.mjai_kyoku_events is None
+            or kyoku.log_index < 0
+            or kyoku.log_index >= len(self.mjai_kyoku_events)
+        ):
+            return None
+        discard_rank = 0
+        for entry in kyoku.entries:
+            if entry.actor == selected_entry.actor and entry.actual_action_kind == "dahai":
+                discard_rank += 1
+            if entry.log_entry_index == selected_entry.log_entry_index:
+                break
+        if discard_rank <= 0:
+            return None
+        discard_events = [
+            event_index
+            for event_index, event in self.mjai_kyoku_events[kyoku.log_index]
+            if str(event.get("type", "")).lower() == "dahai" and event.get("actor") == selected_entry.actor
+        ]
+        if discard_rank > len(discard_events):
+            return None
+        selected_event_index = discard_events[discard_rank - 1]
+        hidden_before = sum(
+            1
+            for event_index, event in self.mjai_kyoku_events[kyoku.log_index]
+            if event_index < selected_event_index and str(event.get("type", "")).lower() == "reach_accepted"
+        )
+        return max(0, selected_event_index - 1 - hidden_before)
+
+    def _ensure_replay_dialog(self):
+        if self.replay_dialog is not None and self.replay_view is not None:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Tenhou Replay")
+        dialog.setFixedSize(600, 338)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        view = QWebEngineView(dialog)
+        layout.addWidget(view)
+        self.replay_dialog = dialog
+        self.replay_view = view
+
+    def open_tenhou_replay(self, kyoku: ReviewKyokuDetail, entry=None):
+        if self.tenhou_payload is None:
+            QMessageBox.warning(self, "리플레이 열기 실패", "Tenhou 리플레이 데이터를 찾지 못했습니다.")
+            return
+        logs = self.tenhou_payload.get("log") or []
+        if kyoku.log_index < 0 or kyoku.log_index >= len(logs):
+            QMessageBox.warning(self, "리플레이 열기 실패", "현재 국의 Tenhou 로그를 찾지 못했습니다.")
+            return
+
+        player_index = kyoku.player_index if kyoku.player_index is not None else 0
+        split_payload = dict(self.tenhou_payload)
+        split_payload["log"] = [logs[kyoku.log_index]]
+        encoded = quote(json.dumps(split_payload, ensure_ascii=False, separators=(",", ":")))
+        turn_param = ""
+        mapped_tj = self._compute_tenhou_tj(kyoku, entry)
+        if mapped_tj is not None:
+            turn_param = f"&ts=0&tj={mapped_tj}"
+        url = QUrl(f"https://tenhou.net/5/?tw={player_index}{turn_param}#json={encoded}")
+
+        self._ensure_replay_dialog()
+        assert self.replay_dialog is not None and self.replay_view is not None
+        self.replay_view.setUrl(url)
+        self.replay_dialog.show()
+        self.replay_dialog.raise_()
+        self.replay_dialog.activateWindow()
 
 class ResultWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None):

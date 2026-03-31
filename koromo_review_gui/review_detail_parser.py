@@ -150,8 +150,11 @@ class ReviewFuuroGroup:
 
 @dataclass(slots=True)
 class ReviewEntryDetail:
+    log_entry_index: int
     round_label: str
     actor: int | None
+    last_actor: int | None
+    actual_action_kind: str
     junme: int
     tile: str
     tiles_left: int
@@ -175,6 +178,7 @@ class ReviewEntryDetail:
 
 @dataclass(slots=True)
 class ReviewKyokuDetail:
+    log_index: int
     round_label: str
     seat_label: str
     player_index: int | None
@@ -269,7 +273,7 @@ def parse_review_detail(path: str | Path) -> ReviewGameDetail:
     review = payload.get("review") or {}
     kyokus: list[ReviewKyokuDetail] = []
 
-    for kyoku in review.get("kyokus") or []:
+    for log_index, kyoku in enumerate(review.get("kyokus") or []):
         kyoku_index = int(kyoku.get("kyoku", 0))
         round_label = _round_label(kyoku_index, int(kyoku.get("honba", 0)))
         entries: list[ReviewEntryDetail] = []
@@ -365,8 +369,11 @@ def parse_review_detail(path: str | Path) -> ReviewGameDetail:
 
             entries.append(
                 ReviewEntryDetail(
+                    log_entry_index=entry_index,
                     round_label=round_label,
                     actor=actor,
+                    last_actor=int(entry["last_actor"]) if entry.get("last_actor") is not None else None,
+                    actual_action_kind=actual_kind,
                     junme=int(entry.get("junme", 0)),
                     tile=_tile_token(entry.get("tile")),
                     tiles_left=int(entry.get("tiles_left", 0)),
@@ -393,6 +400,7 @@ def parse_review_detail(path: str | Path) -> ReviewGameDetail:
         score_text = _format_scores(kyoku.get("relative_scores") or [], player_index)
         kyokus.append(
             ReviewKyokuDetail(
+                log_index=log_index,
                 round_label=round_label,
                 seat_label=_seat_label(kyoku_index, player_index),
                 player_index=player_index,
