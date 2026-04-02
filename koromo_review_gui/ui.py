@@ -106,8 +106,8 @@ def level_label(level_id: int | None) -> str:
     step = level_id % 100
     names = {
         1: "초심",
-        2: "작걸",
-        3: "작사",
+        2: "작사",
+        3: "작걸",
         4: "작호",
         5: "작성",
         6: "혼천",
