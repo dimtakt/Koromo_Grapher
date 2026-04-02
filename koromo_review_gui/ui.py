@@ -7,11 +7,12 @@ from urllib.parse import quote
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PySide6.QtCore import QObject, QSize, QThread, Qt, Signal, QUrl
-from PySide6.QtGui import QAction, QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QTransform
+from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QTransform
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QSplitter
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -41,7 +42,7 @@ from .local_settings import LocalSettingsStore
 from .models import AnalysisSession, EngineAnalysisResult, GameAnalysis, PlayerQuery
 from .review_detail_parser import ReviewFuuroGroup, ReviewGameDetail, ReviewKyokuDetail, parse_review_detail
 from .runtime_paths import repo_root
-from .services import AnalyzerService, KoromoService, MajsoulPaifuService
+from .services import AnalyzerService, KoromoService, MajsoulPaifuService, SingleGameSourceService
 from .session_store import AnalysisSessionStore
 from .tenhou_to_mjai_bridge import TenhouToMjaiBridge
 
@@ -455,6 +456,59 @@ class AnalysisWorker(QObject):
                     self.progress.emit(model_index - 1, total_models, f"{engine_name} 더미 분석 중...")
                     stats = analyzer_service.analyze_games(games)
 
+                reports.append(
+                    EngineAnalysisResult(
+                        engine_name=engine_name,
+                        model_dir=model_dir,
+                        stats=stats,
+                    )
+                )
+
+            self.finished.emit(reports, None)
+        except Exception as exc:  # pragma: no cover - GUI thread boundary
+            self.finished.emit(None, exc)
+
+
+class SingleAnalysisWorker(QObject):
+    progress = Signal(int, int, str)
+    finished = Signal(object, object)
+
+    def __init__(
+        self,
+        source_input: str,
+        fallback_player_id: int | None,
+        query: PlayerQuery,
+        model_dirs: list[str],
+        cache_dir: str,
+    ):
+        super().__init__()
+        self.source_input = source_input
+        self.fallback_player_id = fallback_player_id
+        self.query = query
+        self.model_dirs = model_dirs
+        self.cache_dir = cache_dir
+
+    def run(self):
+        try:
+            source_service = SingleGameSourceService(self.cache_dir)
+            prepared = source_service.prepare(
+                self.source_input,
+                self.fallback_player_id,
+                self.query,
+                progress_callback=lambda current, total, message: self.progress.emit(current, total, message),
+            )
+
+            reports: list[EngineAnalysisResult] = []
+            total_models = max(1, len(self.model_dirs))
+            for model_index, model_dir in enumerate(self.model_dirs, start=1):
+                engine_name = Path(model_dir).name or f"engine_{model_index}"
+                analyzer_service = AnalyzerService(model_dir)
+
+                def bridge_progress(current: int, total: int, message: str):
+                    prefix = f"[엔진 {model_index}/{total_models}] {engine_name}"
+                    self.progress.emit(current, total, f"{prefix} | {message}")
+
+                stats = analyzer_service.analyze_single_prepared_game(prepared, progress_callback=bridge_progress)
                 reports.append(
                     EngineAnalysisResult(
                         engine_name=engine_name,
@@ -1489,13 +1543,15 @@ class MainWindow(QMainWindow):
         self.resize(1120, 430)
 
         self.koromo_service = KoromoService()
+        self.single_source_service = SingleGameSourceService(self._default_cache_dir())
         self.session_store = AnalysisSessionStore()
         self.local_settings_store = LocalSettingsStore(self._local_settings_path())
         self.result_window = ResultWindow(self)
         self.current_query: PlayerQuery | None = None
+        self.current_query_payload: dict | None = None
         self.current_reports: list[EngineAnalysisResult] = []
         self.worker_thread: QThread | None = None
-        self.worker: AnalysisWorker | None = None
+        self.worker: AnalysisWorker | SingleAnalysisWorker | None = None
 
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("https://amae-koromo.sapk.ch/player/120147562/12.9")
@@ -1517,6 +1573,17 @@ class MainWindow(QMainWindow):
         self.recent_games_input.setValue(20)
         self.recent_games_input.setSpecialValueText("전체")
 
+        self.single_source_input = QLineEdit()
+        self.single_source_input.setPlaceholderText("Majsoul 패보 링크 또는 마작일번가 코드")
+        self.single_source_input.textChanged.connect(self._update_single_source_hint)
+        self.single_player_override = QCheckBox("Actor ID 지정")
+        self.single_player_input = QSpinBox()
+        self.single_player_input.setRange(0, 3)
+        self.single_player_input.setValue(0)
+        self.single_player_input.setEnabled(False)
+        self.single_player_override.toggled.connect(self.single_player_input.setEnabled)
+        self.single_source_hint = QLabel("-")
+
         self.model_combo = QComboBox()
         self.model_combo.setToolTip("분석에 사용할 엔진 폴더를 실행 경로 기준 /model 아래에 넣어 주세요.")
         self.refresh_models_button = QPushButton("갱신")
@@ -1528,6 +1595,8 @@ class MainWindow(QMainWindow):
 
         self.run_button = QPushButton("분석 시작")
         self.run_button.clicked.connect(self.run_analysis)
+        self.single_run_button = QPushButton("단판 분석 시작")
+        self.single_run_button.clicked.connect(self.run_single_analysis)
         self.save_button = QPushButton("결과 저장")
         self.save_button.clicked.connect(self.save_session)
         self.load_button = QPushButton("결과 불러오기")
@@ -1546,22 +1615,43 @@ class MainWindow(QMainWindow):
         self.delete_session_button.clicked.connect(self.delete_selected_session)
 
         self._build_ui()
-        self._build_menu()
+        self.menuBar().hide()
         self.populate_models_from_repo()
         self.load_local_settings()
         self.populate_recent_sessions()
+        self._update_single_source_hint()
     def _build_ui(self):
         root = QWidget()
         layout = QVBoxLayout(root)
 
         controls = QGroupBox("분석 시도")
-        controls_form = QFormLayout(controls)
-        controls_form.addRow("Koromo 링크", self.url_input)
-        controls_form.addRow("패보 캐시 폴더", self.cache_dir_input)
-        controls_form.addRow("CN 이메일", self.cn_email_input)
-        controls_form.addRow("CN 비밀번호", self.cn_password_input)
-        controls_form.addRow(self.cn_warning_label)
-        controls_form.addRow("최근 N판 (0=전체)", self.recent_games_input)
+        controls_layout = QVBoxLayout(controls)
+
+        self.mode_tabs = QTabWidget()
+        batch_tab = QWidget()
+        batch_form = QFormLayout(batch_tab)
+        batch_form.addRow("Koromo 링크", self.url_input)
+        batch_form.addRow("최근 N판 (0=전체)", self.recent_games_input)
+        batch_form.addRow("", self.run_button)
+        self.mode_tabs.addTab(batch_tab, "일괄 분석")
+
+        single_tab = QWidget()
+        single_form = QFormLayout(single_tab)
+        single_form.addRow("패보 링크/코드", self.single_source_input)
+        single_option_row = QHBoxLayout()
+        single_option_row.addWidget(self.single_source_hint, 1)
+        single_option_row.addWidget(self.single_player_override, 0)
+        single_option_row.addWidget(self.single_player_input, 0)
+        single_form.addRow("감지 결과 / Actor ID", single_option_row)
+        single_form.addRow("", self.single_run_button)
+        self.mode_tabs.addTab(single_tab, "단판 분석")
+        controls_layout.addWidget(self.mode_tabs)
+
+        shared_form = QFormLayout()
+        shared_form.addRow("패보 캐시 폴더", self.cache_dir_input)
+        shared_form.addRow("CN 이메일", self.cn_email_input)
+        shared_form.addRow("CN 비밀번호", self.cn_password_input)
+        shared_form.addRow(self.cn_warning_label)
 
         model_group = QGroupBox("분석 엔진")
         model_layout = QVBoxLayout(model_group)
@@ -1570,14 +1660,14 @@ class MainWindow(QMainWindow):
         model_row.addWidget(self.refresh_models_button, 0)
         model_layout.addLayout(model_row)
         model_layout.addWidget(self.model_hint_label)
-        controls_form.addRow("분석 엔진", model_group)
+        shared_form.addRow("분석 엔진", model_group)
 
         button_row = QHBoxLayout()
-        button_row.addWidget(self.run_button)
         button_row.addWidget(self.open_result_button)
         button_row.addWidget(self.save_button)
         button_row.addWidget(self.load_button)
-        controls_form.addRow("동작", button_row)
+        shared_form.addRow("동작", button_row)
+        controls_layout.addLayout(shared_form)
 
         recent_group = QGroupBox("저장 세션")
         recent_layout = QVBoxLayout(recent_group)
@@ -1604,11 +1694,8 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         self.setCentralWidget(root)
 
-    def _build_menu(self):
-        file_menu = self.menuBar().addMenu("파일")
-        exit_action = QAction("종료", self)
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
+    def _update_single_source_hint(self):
+        self.single_source_hint.setText(self.single_source_service.describe_source(self.single_source_input.text()))
 
     def model_root_dir(self) -> Path:
         return repo_root() / "model"
@@ -1699,12 +1786,71 @@ class MainWindow(QMainWindow):
             cn_login_password=self.cn_password_input.text().strip() or None,
         )
         self.current_query = query
+        self.current_query_payload = {
+            "analysis_mode": "batch",
+            "koromo_url": koromo_url,
+            "recent_games": recent_games,
+            "player_id": None,
+            "mode_id": None,
+            "model_dirs": model_dirs,
+            "cache_dir": self.cache_dir_input.text().strip(),
+        }
         self.progress_label.setText("대국 목록 조회 중...")
         self.progress_bar.setRange(0, 0)
         self._set_running(True)
 
         self.worker_thread = QThread(self)
         self.worker = AnalysisWorker(query, model_dirs, self.cache_dir_input.text().strip())
+        self.worker.moveToThread(self.worker_thread)
+        self.worker_thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self.on_worker_progress)
+        self.worker.finished.connect(self.on_worker_finished)
+        self.worker.finished.connect(self.worker_thread.quit)
+        self.worker_thread.finished.connect(self._cleanup_worker)
+        self.worker_thread.start()
+
+    def run_single_analysis(self):
+        if self.worker_thread is not None:
+            QMessageBox.information(self, "진행 중", "이미 분석이 실행 중입니다.")
+            return
+
+        source_input = self.single_source_input.text().strip()
+        if not source_input:
+            QMessageBox.warning(self, "입력 필요", "Majsoul 패보 링크 또는 마작일번가 코드를 입력해 주세요.")
+            return
+
+        model_dirs = self._selected_model_dirs()
+        if not model_dirs:
+            QMessageBox.warning(self, "입력 필요", "분석할 엔진 폴더를 하나 준비해 주세요.")
+            return
+
+        self.current_query = None
+        effective_player_id = int(self.single_player_input.value()) if self.single_player_override.isChecked() else None
+        self.current_query_payload = {
+            "analysis_mode": "single",
+            "source_input": source_input,
+            "single_player_override": self.single_player_override.isChecked(),
+            "single_player_id": int(self.single_player_input.value()),
+            "model_dirs": model_dirs,
+            "cache_dir": self.cache_dir_input.text().strip(),
+        }
+        self.progress_label.setText("단판 분석 준비 중...")
+        self.progress_bar.setRange(0, 0)
+        self._set_running(True)
+
+        self.worker_thread = QThread(self)
+        self.worker = SingleAnalysisWorker(
+            source_input,
+            effective_player_id,
+            PlayerQuery(
+                koromo_url="",
+                majsoul_access_token=None,
+                cn_login_email=self.cn_email_input.text().strip() or None,
+                cn_login_password=self.cn_password_input.text().strip() or None,
+            ),
+            model_dirs,
+            self.cache_dir_input.text().strip(),
+        )
         self.worker.moveToThread(self.worker_thread)
         self.worker_thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_worker_progress)
@@ -1730,11 +1876,26 @@ class MainWindow(QMainWindow):
 
         self.current_reports = reports or []
         self.render_reports(self.current_reports)
-        self.show_result_window()
         self.progress_label.setText("분석 완료")
+        analysis_mode = (self.current_query_payload or {}).get("analysis_mode", "batch")
+        if analysis_mode == "single":
+            if (
+                self.current_reports
+                and self.result_window.current_report is not None
+                and self.result_window.current_games
+            ):
+                self.result_window.open_game_detail_at_row(0)
+            else:
+                self.show_result_window()
+        else:
+            self.show_result_window()
 
-        has_real_fetch = bool(self.current_query and self.current_query.cn_login_email and self.current_query.cn_login_password)
-        if not has_real_fetch:
+        has_real_fetch = bool(
+            self.current_query
+            and self.current_query.cn_login_email
+            and self.current_query.cn_login_password
+        )
+        if analysis_mode == "batch" and not has_real_fetch:
             QMessageBox.information(self, "안내", "이번 실행은 실제 패보 인증 정보가 없어 더미 결과로 분석되었습니다.")
     def _cleanup_worker(self):
         if self.worker is not None:
@@ -1749,7 +1910,7 @@ class MainWindow(QMainWindow):
         self.result_window.render_reports(reports)
 
     def save_session(self):
-        if not self.current_reports or self.current_query is None:
+        if not self.current_reports or self.current_query_payload is None:
             QMessageBox.information(self, "저장할 내용 없음", "먼저 분석을 한 번 실행해 주세요.")
             return
 
@@ -1763,14 +1924,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        safe_query = {
-            "koromo_url": self.current_query.koromo_url,
-            "recent_games": self.current_query.recent_games,
-            "player_id": self.current_query.player_id,
-            "mode_id": self.current_query.mode_id,
-            "model_dirs": self._selected_model_dirs(),
-            "cache_dir": self.cache_dir_input.text().strip(),
-        }
+        safe_query = dict(self.current_query_payload)
+        safe_query["model_dirs"] = self._selected_model_dirs()
+        safe_query["cache_dir"] = self.cache_dir_input.text().strip()
         self.session_store.save(path, safe_query, self.current_reports)
         self.progress_label.setText(f"저장 완료: {Path(path).name}")
         self.populate_recent_sessions()
@@ -1834,10 +1990,8 @@ class MainWindow(QMainWindow):
 
     def apply_loaded_session(self, session: AnalysisSession):
         query = session.query
-        self.url_input.setText(query.get("koromo_url", ""))
+        self.current_query_payload = dict(query)
         self.cache_dir_input.setText(query.get("cache_dir", self.cache_dir_input.text()))
-        recent_games = query.get("recent_games")
-        self.recent_games_input.setValue(int(recent_games or 0))
         saved_model_dirs = {str(Path(model_dir)) for model_dir in query.get("model_dirs", [])}
         self.populate_models_from_repo()
         if saved_model_dirs:
@@ -1845,6 +1999,25 @@ class MainWindow(QMainWindow):
                 if self.model_combo.itemData(index, Qt.ItemDataRole.UserRole) in saved_model_dirs:
                     self.model_combo.setCurrentIndex(index)
                     break
+
+        if query.get("analysis_mode") == "single":
+            self.mode_tabs.setCurrentIndex(1)
+            self.single_source_input.setText(query.get("source_input", ""))
+            self.single_player_override.setChecked(bool(query.get("single_player_override", False)))
+            self.single_player_input.setValue(int(query.get("single_player_id", 0)))
+            self.current_query = None
+        else:
+            self.mode_tabs.setCurrentIndex(0)
+            self.url_input.setText(query.get("koromo_url", ""))
+            recent_games = query.get("recent_games")
+            self.recent_games_input.setValue(int(recent_games or 0))
+            self.current_query = PlayerQuery(
+                koromo_url=query.get("koromo_url", ""),
+                recent_games=recent_games,
+                player_id=query.get("player_id"),
+                mode_id=query.get("mode_id"),
+            )
+
         self.current_reports = session.reports
         self.result_window.set_cache_dir(self.cache_dir_input.text().strip())
         self.render_reports(session.reports)
@@ -1863,6 +2036,7 @@ class MainWindow(QMainWindow):
 
     def _set_running(self, running: bool):
         self.run_button.setEnabled(not running)
+        self.single_run_button.setEnabled(not running)
         self.open_result_button.setEnabled(not running)
         self.save_button.setEnabled(not running)
         self.load_button.setEnabled(not running)
@@ -1872,6 +2046,9 @@ class MainWindow(QMainWindow):
         self.delete_session_button.setEnabled(not running)
 
     def _default_session_filename(self) -> str:
+        if self.current_query_payload and self.current_query_payload.get("analysis_mode") == "single":
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            return f"single_game_{timestamp}.json"
         player_id = self._safe_player_fragment(self.url_input.text().strip())
         recent_games = self.recent_games_input.value() or "all"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
