@@ -11,6 +11,7 @@ class PlayerQuery:
     recent_games: Optional[int] = None
     player_id: Optional[int] = None
     mode_id: Optional[int] = None
+    mode_ids: Optional[list[int]] = None
     majsoul_access_token: Optional[str] = None
     cn_login_email: Optional[str] = None
     cn_login_password: Optional[str] = None
@@ -67,6 +68,8 @@ class GameAnalysis:
     bad_move_rate_5: float
     bad_move_rate_10: float
     uuid: Optional[str] = None
+    mode_id: Optional[int] = None
+    placement: Optional[int] = None
     bad_move_count_5: int = 0
     bad_move_count_10: int = 0
     started_at: Optional[datetime] = None
@@ -127,6 +130,8 @@ def aggregate_stats_from_dict(payload: dict[str, Any]) -> AggregateStats:
             GameAnalysis(
                 game_id=row["game_id"],
                 uuid=row.get("uuid"),
+                mode_id=int(row["mode_id"]) if row.get("mode_id") is not None else None,
+                placement=int(row["placement"]) if row.get("placement") is not None else None,
                 decision_count=int(row["decision_count"]),
                 rating=float(row["rating"]),
                 top1_agreement=float(row["top1_agreement"]),

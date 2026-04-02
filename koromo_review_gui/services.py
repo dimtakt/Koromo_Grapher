@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from random import Random
 from typing import Callable
+from urllib.parse import urlparse
 
 import requests
 
@@ -315,6 +316,102 @@ class KoromoService:
                 raise
         return merged
 
+    def parse_query(self, query: PlayerQuery) -> PlayerQuery:
+        path_parts = [part for part in urlparse(query.koromo_url).path.split("/") if part]
+        try:
+            player_index = path_parts.index("player")
+            player_id = int(path_parts[player_index + 1])
+        except (ValueError, IndexError):
+            raise ValueError("Koromo ?뚮젅?댁뼱 留곹겕?먯꽌 怨꾩젙 ?뺣낫瑜?李얠? 紐삵뻽?듬땲??")
+
+        mode_ids = self._extract_mode_ids(path_parts[player_index + 2 :])
+        primary_mode = mode_ids[0] if len(mode_ids) == 1 else None
+        return replace(query, player_id=player_id, mode_id=primary_mode, mode_ids=mode_ids or None)
+
+    def fetch_games(self, query: PlayerQuery) -> list[GameRecord]:
+        parsed = self.parse_query(query)
+        if parsed.player_id is None:
+            return []
+
+        if parsed.recent_games:
+            rows = self._fetch_recent(parsed.player_id, parsed.recent_games, parsed.mode_ids)
+        else:
+            rows = self._fetch_all(parsed.player_id, parsed.mode_ids)
+
+        return [self._to_game_record(parsed, row) for row in rows]
+
+    def _fetch_recent(self, player_id: int, limit: int, mode_ids: list[int] | None = None) -> list[dict]:
+        collected: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for start_ts, end_ts in reversed(self._iter_month_windows()):
+            rows = self._request_records_for_modes(player_id, start_ts, end_ts, 500, mode_ids)
+            rows.sort(key=lambda row: row.get("startTime", 0), reverse=True)
+
+            for row in rows:
+                row_id = row.get("_id") or row.get("uuid")
+                if not row_id or row_id in seen_ids:
+                    continue
+                seen_ids.add(row_id)
+                collected.append(row)
+                if len(collected) >= limit:
+                    return collected[:limit]
+
+        collected.sort(key=lambda row: row.get("startTime", 0), reverse=True)
+        return collected[:limit]
+
+    def _fetch_all(self, player_id: int, mode_ids: list[int] | None = None) -> list[dict]:
+        all_rows: list[dict] = []
+        seen_ids: set[str] = set()
+
+        for start_ts, end_ts in self._iter_month_windows():
+            rows = self._request_records_for_modes(player_id, start_ts, end_ts, 500, mode_ids)
+            for row in rows:
+                row_id = row.get("_id") or row.get("uuid")
+                if not row_id or row_id in seen_ids:
+                    continue
+                seen_ids.add(row_id)
+                all_rows.append(row)
+
+        all_rows.sort(key=lambda row: row.get("startTime", 0), reverse=True)
+        return all_rows
+
+    def _request_records_for_modes(
+        self,
+        player_id: int,
+        start_ts: int,
+        end_ts: int,
+        limit: int,
+        mode_ids: list[int] | None = None,
+    ) -> list[dict]:
+        merged: list[dict] = []
+        for mode_id in (mode_ids or list(FOUR_PLAYER_MODE_IDS)):
+            try:
+                merged.extend(self._request_records(player_id, mode_id, start_ts, end_ts, limit))
+            except requests.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status == 400:
+                    continue
+                raise
+        return merged
+
+    @staticmethod
+    def _extract_mode_ids(path_suffix: list[str]) -> list[int]:
+        if not path_suffix:
+            return []
+        candidate = path_suffix[-1]
+        if not re.fullmatch(r"\d+(?:\.\d+)*", candidate):
+            return []
+        mode_ids: list[int] = []
+        for token in candidate.split("."):
+            try:
+                value = int(token)
+            except ValueError:
+                continue
+            if value in FOUR_PLAYER_MODE_IDS and value not in mode_ids:
+                mode_ids.append(value)
+        return mode_ids
+
     def _to_game_record(self, query: PlayerQuery, row: dict) -> GameRecord:
         players = row.get("players") or []
         player = next((item for item in players if item.get("accountId") == query.player_id), None)
@@ -396,6 +493,7 @@ class AnalyzerService:
         reviewer = MortalReviewRunner(self.model_dir)
         reviewer_bridge = MjaiReviewerBridge()
         all_decisions: list[DecisionRecord] = []
+        analyzed_games: list[GameRecord] = []
         total = len(games)
 
         if progress_callback:
@@ -403,37 +501,45 @@ class AnalyzerService:
 
         with paifu_service.batch_context(query) as batch_client:
             for index, game in enumerate(games, start=1):
-                if progress_callback:
-                    progress_callback(index - 1, total, f"[{index}/{total}] \ud328\ubcf4 \ub2e4\uc6b4\ub85c\ub4dc \uc911 | {game.game_id}")
-                fetch_result = paifu_service.download_game(query, game, batch_client=batch_client)
-                head_path = Path(fetch_result.head_path)
-                record_data_path = Path(fetch_result.record_data_path)
+                try:
+                    if progress_callback:
+                        progress_callback(index - 1, total, f"[{index}/{total}] \ud328\ubcf4 \ub2e4\uc6b4\ub85c\ub4dc \uc911 | {game.game_id}")
+                    fetch_result = paifu_service.download_game(query, game, batch_client=batch_client)
+                    head_path = Path(fetch_result.head_path)
+                    record_data_path = Path(fetch_result.record_data_path)
 
-                if progress_callback:
-                    progress_callback(index - 1, total, f"[{index}/{total}] tenhou \ubcc0\ud658 \uc911 | {game.game_id}")
-                tenhou_result = export_tenhou6_from_saved_record(head_path, record_data_path)
+                    if progress_callback:
+                        progress_callback(index - 1, total, f"[{index}/{total}] tenhou \ubcc0\ud658 \uc911 | {game.game_id}")
+                    tenhou_result = export_tenhou6_from_saved_record(head_path, record_data_path)
 
-                seat = reviewer.resolve_seat_from_head(head_path, query.player_id).seat
-                state_file = Path(self.model_dir) / "mortal.pth"
-                review_output_path = Path(tenhou_result.tenhou_json_path).with_name(
-                    f"{Path(tenhou_result.tenhou_json_path).stem}.{Path(self.model_dir).name}.review.json"
-                )
+                    seat = reviewer.resolve_seat_from_head(head_path, query.player_id).seat
+                    state_file = Path(self.model_dir) / "mortal.pth"
+                    review_output_path = Path(tenhou_result.tenhou_json_path).with_name(
+                        f"{Path(tenhou_result.tenhou_json_path).stem}.{Path(self.model_dir).name}.review.json"
+                    )
 
-                if progress_callback:
-                    progress_callback(index - 1, total, f"[{index}/{total}] reviewer \ubd84\uc11d \uc911 | {game.game_id}")
-                result = reviewer_bridge.review_tenhou_game(
-                    tenhou_result.tenhou_json_path,
-                    seat,
-                    review_output_path,
-                    state_file=state_file,
-                )
-                all_decisions.extend(parse_reviewer_json(result.output_path, game.game_id))
+                    if progress_callback:
+                        progress_callback(index - 1, total, f"[{index}/{total}] reviewer \ubd84\uc11d \uc911 | {game.game_id}")
+                    result = reviewer_bridge.review_tenhou_game(
+                        tenhou_result.tenhou_json_path,
+                        seat,
+                        review_output_path,
+                        state_file=state_file,
+                    )
+                    all_decisions.extend(parse_reviewer_json(result.output_path, game.game_id))
+                    analyzed_games.append(game)
 
-                if progress_callback:
-                    progress_callback(index, total, f"[{index}/{total}] \uc644\ub8cc | {game.game_id}")
+                    if progress_callback:
+                        progress_callback(index, total, f"[{index}/{total}] \uc644\ub8cc | {game.game_id}")
+                except Exception as exc:
+                    if self._is_skippable_game_error(exc):
+                        if progress_callback:
+                            progress_callback(index, total, f"[{index}/{total}] \uc2a4\ud0b5 (\ubc18\uc7a5\uc804\ub9cc \uc9c0\uc6d0) | {game.game_id}")
+                        continue
+                    raise
 
         stats = summarize_decisions(all_decisions)
-        self._attach_metadata(stats, games)
+        self._attach_metadata(stats, analyzed_games)
         return stats
 
     def analyze_single_prepared_game(
@@ -467,6 +573,11 @@ class AnalyzerService:
         return stats
 
     @staticmethod
+    def _is_skippable_game_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "hanchan" in message and "support" in message
+
+    @staticmethod
     def _attach_metadata(stats: AggregateStats, games: list[GameRecord]) -> None:
         metadata = {game.game_id: game for game in games}
         for row in stats.games:
@@ -475,6 +586,8 @@ class AnalyzerService:
                 continue
             row.uuid = game.uuid
             row.started_at = game.started_at
+            row.mode_id = game.mode_id
+            row.placement = game.placement
             notes = []
             if game.placement is not None:
                 notes.append(f"{game.placement}위")

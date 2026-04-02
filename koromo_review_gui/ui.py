@@ -1,20 +1,19 @@
 ﻿from __future__ import annotations
 
 import json
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtCore import QObject, QSize, QThread, Qt, Signal, QUrl
+from PySide6.QtCharts import QAreaSeries, QChart, QChartView, QLineSeries, QValueAxis
+from PySide6.QtCore import QObject, QRect, QSize, QThread, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QTransform
-from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QSplitter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QDialog,
     QFileDialog,
     QFormLayout,
     QHeaderView,
@@ -219,6 +218,71 @@ class TileGlyphStrip(QWidget):
             stack_y = max(0, base_y - stack_pixmap.height() - 16)
             painter.drawPixmap(stack_x, stack_y, stack_pixmap)
         painter.end()
+
+
+class PlacementPieWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.counts = [0, 0, 0, 0]
+        self.setFixedSize(290, 160)
+
+    def set_counts(self, counts: list[int]) -> None:
+        values = list(counts[:4]) + [0] * max(0, 4 - len(counts))
+        self.counts = values[:4]
+        self.update()
+
+    def paintEvent(self, event):
+        del event
+        painter = QPainter(self)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            total = sum(self.counts)
+            colors = [
+                QColor("#34d399"),
+                QColor("#60a5fa"),
+                QColor("#9ca3af"),
+                QColor("#f87171"),
+            ]
+            labels = ["1위", "2위", "3위", "4위"]
+
+            legend_width = 118
+            margin = 10
+            pie_area_width = max(10, self.width() - legend_width - margin * 3)
+            pie_size = min(pie_area_width, self.height() - margin * 2)
+            pie_x = margin
+            pie_y = (self.height() - pie_size) // 2
+            pie_rect = QRect(pie_x, pie_y, pie_size, pie_size)
+            if total > 0:
+                start_angle = 0
+                for value, color in zip(self.counts, colors):
+                    if value <= 0:
+                        continue
+                    span = round((value / total) * 360 * 16)
+                    painter.setBrush(QBrush(color))
+                    painter.setPen(QPen(QColor("#ffffff"), 2))
+                    painter.drawPie(pie_rect, start_angle, span)
+                    start_angle += span
+            else:
+                painter.setBrush(QBrush(QColor("#e5e7eb")))
+                painter.setPen(QPen(QColor("#ffffff"), 2))
+                painter.drawEllipse(pie_rect)
+
+            legend_x = pie_rect.right() + 14
+            legend_y = (self.height() - (len(labels) * 22 - 12)) // 2
+            font = painter.font()
+            font.setPointSize(9)
+            painter.setFont(font)
+            for index, (label, color, value) in enumerate(zip(labels, colors, self.counts)):
+                y = legend_y + index * 22
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(color))
+                painter.drawRoundedRect(legend_x, y, 10, 10, 3, 3)
+                painter.setPen(QColor("#374151"))
+                pct = (value / total * 100.0) if total > 0 else 0.0
+                painter.drawText(legend_x + 16, y + 10, f"{label} {value}판 ({pct:.0f}%)")
+        finally:
+            painter.end()
 
 
 class HandCompositeStrip(QWidget):
@@ -995,8 +1059,6 @@ class GameDetailWindow(QMainWindow):
             "padding: 8px 10px; border: 1px solid #cbd5e0; border-radius: 8px; background: #f8fafc;"
         )
         self.tabs = QTabWidget()
-        self.replay_dialog: QDialog | None = None
-        self.replay_view: QWebEngineView | None = None
         self.tenhou_payload: dict | None = None
         self.mjai_kyoku_events: list[list[tuple[int, dict]]] | None = None
 
@@ -1019,15 +1081,12 @@ class GameDetailWindow(QMainWindow):
             match_rate = detail.total_matches * 100.0 / detail.total_reviewed
         self.header_label.setText(
             "<table width='100%' cellspacing='0' cellpadding='0'>"
-            f"<tr><td colspan='2'><b>대국 ID</b>: {game.game_id}</td></tr>"
-            f"<tr><td colspan='2'><b>엔진</b>: {report.engine_name}</td></tr>"
-            f"<tr><td colspan='2'><b>리뷰 파일</b>: {review_path.name}</td></tr>"
-            "<tr>"
-            f"<td><b>리뷰 Rating</b>: {detail.rating:.2f} / "
+            f"<tr><td><b>대국 ID</b>: {game.game_id}</td></tr>"
+            f"<tr><td><b>엔진</b>: {report.engine_name}</td></tr>"
+            f"<tr><td><b>리뷰 파일</b>: {review_path.name}</td></tr>"
+            f"<tr><td><b>리뷰 Rating</b>: {detail.rating:.2f} / "
             f"<b>검토 수</b>: {detail.total_reviewed} / "
-            f"<b>일치 수</b>: {detail.total_matches} ({match_rate:.2f}%)</td>"
-            f"<td align='right'><b>mjai-reviewer 버전</b>: {detail.version}</td>"
-            "</tr>"
+            f"<b>일치 수</b>: {detail.total_matches} ({match_rate:.2f}%)</td></tr>"
             "</table>"
         )
         self.tenhou_payload = self._load_tenhou_payload(review_path)
@@ -1133,20 +1192,6 @@ class GameDetailWindow(QMainWindow):
         )
         return max(0, selected_event_index - 1 - hidden_before)
 
-    def _ensure_replay_dialog(self):
-        if self.replay_dialog is not None and self.replay_view is not None:
-            return
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Tenhou Replay")
-        dialog.setFixedSize(600, 338)
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        view = QWebEngineView(dialog)
-        layout.addWidget(view)
-        self.replay_dialog = dialog
-        self.replay_view = view
-
     def open_tenhou_replay(self, kyoku: ReviewKyokuDetail, entry=None):
         if self.tenhou_payload is None:
             QMessageBox.warning(self, "리플레이 열기 실패", "Tenhou 리플레이 데이터를 찾지 못했습니다.")
@@ -1164,14 +1209,9 @@ class GameDetailWindow(QMainWindow):
         mapped_tj = self._compute_tenhou_tj(kyoku, entry)
         if mapped_tj is not None:
             turn_param = f"&ts=0&tj={mapped_tj}"
-        url = QUrl(f"https://tenhou.net/5/?tw={player_index}{turn_param}#json={encoded}")
-
-        self._ensure_replay_dialog()
-        assert self.replay_dialog is not None and self.replay_view is not None
-        self.replay_view.setUrl(url)
-        self.replay_dialog.show()
-        self.replay_dialog.raise_()
-        self.replay_dialog.activateWindow()
+        url = f"https://tenhou.net/5/?tw={player_index}{turn_param}#json={encoded}"
+        if not webbrowser.open(url):
+            QMessageBox.warning(self, "리플레이 열기 실패", "기본 웹 브라우저를 열지 못했습니다.")
 
 class ResultWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None):
@@ -1182,6 +1222,7 @@ class ResultWindow(QMainWindow):
         self.current_reports: list[EngineAnalysisResult] = []
         self.current_games: list[GameAnalysis] = []
         self.current_report: EngineAnalysisResult | None = None
+        self._chart_band_series: list[object] = []
         self.cache_dir = Path("koromo_review_gui_cache")
         self.detail_window: GameDetailWindow | None = None
 
@@ -1248,6 +1289,11 @@ class ResultWindow(QMainWindow):
 
         self.chart_view = QChartView()
         self.chart_view.setMinimumHeight(240)
+        self.chart_view.setStyleSheet("background:transparent; border:none;")
+        self.summary_pie = PlacementPieWidget()
+        self.summary_pie.setStyleSheet(
+            "border: 1px solid #cbd5e0; border-radius: 8px; background: #f8fafc;"
+        )
         self._build_ui()
 
     def _build_ui(self):
@@ -1256,8 +1302,12 @@ class ResultWindow(QMainWindow):
         layout.setSpacing(10)
 
         summary = QGroupBox("결과 요약")
-        summary_form = QFormLayout(summary)
-        summary_form.setVerticalSpacing(8)
+        summary_shell = QHBoxLayout(summary)
+        summary_shell.setContentsMargins(10, 8, 10, 8)
+        summary_shell.setSpacing(12)
+        summary_form = QFormLayout()
+        summary_form.setVerticalSpacing(4)
+        summary_form.setHorizontalSpacing(10)
         summary_form.addRow("엔진", self.summary_labels["engine_name"])
         summary_form.addRow("엔진 정보", self.summary_labels["engine_info"])
         summary_form.addRow("총 대국 수", self.summary_labels["total_games"])
@@ -1267,11 +1317,13 @@ class ResultWindow(QMainWindow):
         summary_form.addRow("Top-3 일치율", self.summary_labels["top3_agreement"])
         summary_form.addRow("악수율 (<5%)", self.summary_labels["bad_move_rate_5"])
         summary_form.addRow("악수율 (<10%)", self.summary_labels["bad_move_rate_10"])
+        summary_shell.addLayout(summary_form, 1)
+        summary_shell.addWidget(self.summary_pie, 0, Qt.AlignmentFlag.AlignVCenter)
 
         summary_tab = QWidget()
         summary_layout = QVBoxLayout(summary_tab)
         summary_layout.setContentsMargins(0, 0, 0, 0)
-        summary_layout.setSpacing(10)
+        summary_layout.setSpacing(6)
         summary_layout.addWidget(summary)
         summary_layout.addWidget(self.chart_view)
 
@@ -1363,6 +1415,11 @@ class ResultWindow(QMainWindow):
         self.summary_labels["top3_agreement"].setText(f"{stats.top3_agreement * 100:.2f}%")
         self.summary_labels["bad_move_rate_5"].setText(f"{stats.bad_move_rate_5 * 100:.2f}%")
         self.summary_labels["bad_move_rate_10"].setText(f"{stats.bad_move_rate_10 * 100:.2f}%")
+        placement_counts = [0, 0, 0, 0]
+        for row in stats.games:
+            if row.placement is not None and 1 <= row.placement <= 4:
+                placement_counts[row.placement - 1] += 1
+        self.summary_pie.set_counts(placement_counts)
 
         ordered_games = sorted(stats.games, key=lambda row: row.started_at.timestamp() if row.started_at else 0.0)
         self.current_games = ordered_games
@@ -1489,9 +1546,20 @@ class ResultWindow(QMainWindow):
     def _clear_summary(self):
         for label in self.summary_labels.values():
             label.setText("-")
+        self.summary_pie.set_counts([0, 0, 0, 0])
+        self._chart_band_series = []
         self.chart_view.setChart(QChart())
 
     def _update_chart(self, games: list[GameAnalysis], engine_name: str):
+        self._chart_band_series = []
+        mode_palette = {
+            9: QColor(255, 244, 179, 90),
+            11: QColor(255, 244, 179, 90),
+            12: QColor(209, 250, 229, 95),
+            8: QColor(209, 250, 229, 95),
+            15: QColor(254, 202, 202, 90),
+            16: QColor(254, 202, 202, 90),
+        }
         rating_series = QLineSeries()
         rating_series.setName("Rating")
 
@@ -1507,6 +1575,32 @@ class ResultWindow(QMainWindow):
             bad_series.append(idx, game.bad_move_rate_5 * 100.0)
 
         chart = QChart()
+        if games:
+            start_index = 1
+            current_mode = games[0].mode_id
+            segments: list[tuple[int, int, int | None]] = []
+            for idx, game in enumerate(games[1:], start=2):
+                if game.mode_id != current_mode:
+                    segments.append((start_index, idx - 1, current_mode))
+                    start_index = idx
+                    current_mode = game.mode_id
+            segments.append((start_index, len(games), current_mode))
+
+            for start_idx, end_idx, mode_id in segments:
+                color = mode_palette.get(mode_id)
+                if color is None:
+                    continue
+                lower = QLineSeries()
+                upper = QLineSeries()
+                lower.append(start_idx - 0.5, 0.0)
+                lower.append(end_idx + 0.5, 0.0)
+                upper.append(start_idx - 0.5, 100.0)
+                upper.append(end_idx + 0.5, 100.0)
+                area = QAreaSeries(upper, lower)
+                area.setPen(QPen(Qt.PenStyle.NoPen))
+                area.setBrush(QBrush(color))
+                self._chart_band_series.extend([lower, upper, area])
+                chart.addSeries(area)
         chart.addSeries(rating_series)
         chart.addSeries(top1_series)
         chart.addSeries(bad_series)
@@ -1523,9 +1617,13 @@ class ResultWindow(QMainWindow):
 
         chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
         chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
-        for series in (rating_series, top1_series, bad_series):
+        for series in chart.series():
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
+        for series in self._chart_band_series:
+            if isinstance(series, QAreaSeries):
+                for marker in chart.legend().markers(series):
+                    marker.setVisible(False)
 
         self.chart_view.setChart(chart)
 
@@ -1792,6 +1890,7 @@ class MainWindow(QMainWindow):
             "recent_games": recent_games,
             "player_id": None,
             "mode_id": None,
+            "mode_ids": None,
             "model_dirs": model_dirs,
             "cache_dir": self.cache_dir_input.text().strip(),
         }
@@ -2016,6 +2115,7 @@ class MainWindow(QMainWindow):
                 recent_games=recent_games,
                 player_id=query.get("player_id"),
                 mode_id=query.get("mode_id"),
+                mode_ids=query.get("mode_ids"),
             )
 
         self.current_reports = session.reports
