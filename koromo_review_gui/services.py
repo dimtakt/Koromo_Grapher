@@ -220,6 +220,7 @@ class KoromoService:
     def __init__(self, session: requests.Session | None = None):
         self.session = session or requests.Session()
         self.session.headers.setdefault("User-Agent", "MortalKoromoReviewer/0.1")
+        self._player_stats_cache: dict[tuple[int, int, int], tuple[int | None, int | None, int | None]] = {}
 
     def parse_query(self, query: PlayerQuery) -> PlayerQuery:
         match = re.search(r"/player/(\d+)/([^/?#]+)", query.koromo_url)
@@ -395,6 +396,36 @@ class KoromoService:
                 raise
         return merged
 
+    def _request_player_stats(self, player_id: int, mode_id: int, end_ts: int) -> tuple[int | None, int | None, int | None]:
+        cache_key = (player_id, mode_id, end_ts)
+        if cache_key in self._player_stats_cache:
+            return self._player_stats_cache[cache_key]
+
+        level_id: int | None = None
+        level_score: int | None = None
+        level_delta: int | None = None
+        url = f"{KOROMO_API_BASE}/v2/pl4/player_stats/{player_id}/{EARLIEST_TS}/{end_ts}"
+        try:
+            response = self.session.get(url, params={"mode": mode_id}, timeout=30)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict):
+                level = payload.get("level") or {}
+                if isinstance(level, dict):
+                    if level.get("id") is not None:
+                        level_id = int(level["id"])
+                    if level.get("score") is not None:
+                        level_score = int(level["score"])
+                    if level.get("delta") is not None:
+                        level_delta = int(level["delta"])
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status not in {400, 404}:
+                raise
+
+        self._player_stats_cache[cache_key] = (level_id, level_score, level_delta)
+        return self._player_stats_cache[cache_key]
+
     @staticmethod
     def _extract_mode_ids(path_suffix: list[str]) -> list[int]:
         if not path_suffix:
@@ -415,6 +446,19 @@ class KoromoService:
     def _to_game_record(self, query: PlayerQuery, row: dict) -> GameRecord:
         players = row.get("players") or []
         player = next((item for item in players if item.get("accountId") == query.player_id), None)
+        mode_id = int(row["modeId"]) if row.get("modeId") is not None else None
+        end_time = int(row["endTime"]) if row.get("endTime") is not None else None
+        level_id = player.get("level") if player else None
+        level_score = None
+        level_delta = player.get("gradingScore") if player else None
+        if query.player_id is not None and mode_id is not None and end_time is not None:
+            snapshot_id, snapshot_score, snapshot_delta = self._request_player_stats(query.player_id, mode_id, end_time)
+            if snapshot_id is not None:
+                level_id = snapshot_id
+            if snapshot_score is not None:
+                level_score = snapshot_score
+            if snapshot_delta is not None:
+                level_delta = snapshot_delta
         placement = None
         if player and players:
             sorted_players = sorted(players, key=lambda item: item.get("score", -999999), reverse=True)
@@ -426,12 +470,15 @@ class KoromoService:
         return GameRecord(
             game_id=str(row.get("_id") or row.get("uuid") or "unknown"),
             uuid=row.get("uuid"),
-            mode_id=row.get("modeId"),
+            mode_id=mode_id,
             started_at=datetime.fromtimestamp(row["startTime"], tz=UTC) if row.get("startTime") else None,
             ended_at=datetime.fromtimestamp(row["endTime"], tz=UTC) if row.get("endTime") else None,
             player_name=player.get("nickname") if player else None,
             player_score=player.get("score") if player else None,
             player_grading_score=player.get("gradingScore") if player else None,
+            player_level_id=level_id,
+            player_level_score=level_score,
+            player_level_delta=level_delta,
             placement=placement,
             source_url=query.koromo_url,
         )
@@ -588,6 +635,9 @@ class AnalyzerService:
             row.started_at = game.started_at
             row.mode_id = game.mode_id
             row.placement = game.placement
+            row.player_level_id = game.player_level_id
+            row.player_level_score = game.player_level_score
+            row.player_level_delta = game.player_level_delta
             notes = []
             if game.placement is not None:
                 notes.append(f"{game.placement}위")

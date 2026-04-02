@@ -27,6 +27,9 @@ class GameRecord:
     player_name: Optional[str] = None
     player_score: Optional[int] = None
     player_grading_score: Optional[int] = None
+    player_level_id: Optional[int] = None
+    player_level_score: Optional[int] = None
+    player_level_delta: Optional[int] = None
     placement: Optional[int] = None
     source_url: Optional[str] = None
 
@@ -70,6 +73,9 @@ class GameAnalysis:
     uuid: Optional[str] = None
     mode_id: Optional[int] = None
     placement: Optional[int] = None
+    player_level_id: Optional[int] = None
+    player_level_score: Optional[int] = None
+    player_level_delta: Optional[int] = None
     bad_move_count_5: int = 0
     bad_move_count_10: int = 0
     started_at: Optional[datetime] = None
@@ -132,6 +138,9 @@ def aggregate_stats_from_dict(payload: dict[str, Any]) -> AggregateStats:
                 uuid=row.get("uuid"),
                 mode_id=int(row["mode_id"]) if row.get("mode_id") is not None else None,
                 placement=int(row["placement"]) if row.get("placement") is not None else None,
+                player_level_id=int(row["player_level_id"]) if row.get("player_level_id") is not None else None,
+                player_level_score=int(row["player_level_score"]) if row.get("player_level_score") is not None else None,
+                player_level_delta=int(row["player_level_delta"]) if row.get("player_level_delta") is not None else None,
                 decision_count=int(row["decision_count"]),
                 rating=float(row["rating"]),
                 top1_agreement=float(row["top1_agreement"]),

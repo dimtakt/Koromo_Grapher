@@ -6,8 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from PySide6.QtCharts import QAreaSeries, QChart, QChartView, QLineSeries, QValueAxis
-from PySide6.QtCore import QObject, QRect, QSize, QThread, Qt, Signal
+from PySide6.QtCharts import QAreaSeries, QChart, QChartView, QLineSeries, QScatterSeries, QValueAxis
+from PySide6.QtCore import QObject, QPointF, QRect, QSize, QThread, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontDatabase, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import QSplitter
 from PySide6.QtWidgets import (
@@ -97,6 +97,60 @@ def is_red_five(tile: str) -> bool:
     return (len(lower) == 2 and lower[0] == "0" and lower[1] in {"m", "p", "s"}) or (
         len(lower) == 3 and lower[0] == "5" and lower[1] in {"m", "p", "s"} and lower[2] == "r"
     )
+
+
+def level_label(level_id: int | None) -> str:
+    if level_id is None:
+        return "-"
+    base = (level_id % 10000) // 100
+    step = level_id % 100
+    names = {
+        1: "초심",
+        2: "작걸",
+        3: "작사",
+        4: "작호",
+        5: "작성",
+        6: "혼천",
+    }
+    label = names.get(base, f"단계 {base}")
+    if base == 6:
+        return label
+    if 1 <= step <= 3:
+        return f"{label}{step}"
+    return label
+
+
+def level_family_color(level_id: int | None) -> QColor | None:
+    if level_id is None:
+        return None
+    base = (level_id % 10000) // 100
+    palette = {
+        1: QColor(229, 231, 235, 85),
+        2: QColor(254, 240, 138, 85),
+        3: QColor(253, 230, 138, 88),
+        4: QColor(187, 247, 208, 88),
+        5: QColor(191, 219, 254, 88),
+        6: QColor(252, 165, 165, 92),
+    }
+    return palette.get(base)
+
+
+def level_score_cap(level_id: int | None) -> int | None:
+    if level_id is None:
+        return None
+    base = (level_id % 10000) // 100
+    step = level_id % 100
+    caps = {
+        1: {1: 20, 2: 80, 3: 200},
+        2: {1: 600, 2: 800, 3: 1000},
+        3: {1: 1200, 2: 1400, 3: 2000},
+        4: {1: 2800, 2: 3200, 3: 3600},
+        5: {1: 4000, 2: 6000, 3: 9000},
+        6: {},
+    }
+    if base == 6:
+        return 20
+    return caps.get(base, {}).get(step)
 
 
 class TileGlyphStrip(QWidget):
@@ -1210,7 +1264,7 @@ class GameDetailWindow(QMainWindow):
         if mapped_tj is not None:
             turn_param = f"&ts=0&tj={mapped_tj}"
         url = f"https://tenhou.net/5/?tw={player_index}{turn_param}#json={encoded}"
-        if not webbrowser.open(url):
+        if not webbrowser.open_new(url):
             QMessageBox.warning(self, "리플레이 열기 실패", "기본 웹 브라우저를 열지 못했습니다.")
 
 class ResultWindow(QMainWindow):
@@ -1223,6 +1277,10 @@ class ResultWindow(QMainWindow):
         self.current_games: list[GameAnalysis] = []
         self.current_report: EngineAnalysisResult | None = None
         self._chart_band_series: list[object] = []
+        self._rank_label_widgets: list[QLabel] = []
+        self._rank_label_segments: list[tuple[int, int, int | None]] = []
+        self._rank_label_series: QLineSeries | None = None
+        self._rank_axis_max: float = 0.0
         self.cache_dir = Path("koromo_review_gui_cache")
         self.detail_window: GameDetailWindow | None = None
 
@@ -1290,6 +1348,7 @@ class ResultWindow(QMainWindow):
         self.chart_view = QChartView()
         self.chart_view.setMinimumHeight(240)
         self.chart_view.setStyleSheet("background:transparent; border:none;")
+        self.chart_view.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         self.summary_pie = PlacementPieWidget()
         self.summary_pie.setStyleSheet(
             "border: 1px solid #cbd5e0; border-radius: 8px; background: #f8fafc;"
@@ -1548,62 +1607,113 @@ class ResultWindow(QMainWindow):
             label.setText("-")
         self.summary_pie.set_counts([0, 0, 0, 0])
         self._chart_band_series = []
+        self._clear_rank_label_widgets()
+        self._rank_label_segments = []
+        self._rank_label_series = None
+        self._rank_axis_max = 0.0
         self.chart_view.setChart(QChart())
 
     def _update_chart(self, games: list[GameAnalysis], engine_name: str):
         self._chart_band_series = []
+        self._clear_rank_label_widgets()
         mode_palette = {
-            9: QColor(255, 244, 179, 90),
-            11: QColor(255, 244, 179, 90),
-            12: QColor(209, 250, 229, 95),
-            8: QColor(209, 250, 229, 95),
-            15: QColor(254, 202, 202, 90),
-            16: QColor(254, 202, 202, 90),
+            9: QColor(255, 244, 179, 54),
+            11: QColor(255, 244, 179, 54),
+            12: QColor(209, 250, 229, 60),
+            8: QColor(209, 250, 229, 60),
+            15: QColor(254, 202, 202, 60),
+            16: QColor(254, 202, 202, 60),
         }
         rating_series = QLineSeries()
         rating_series.setName("Rating")
+        rating_series.setColor(QColor("#2563eb"))
+        rating_pen = QPen(QColor("#2563eb"))
+        rating_pen.setWidth(4)
+        rating_series.setPen(rating_pen)
 
         top1_series = QLineSeries()
         top1_series.setName("AI 일치율")
+        top1_series.setColor(QColor("#16a34a"))
+        top1_pen = QPen(QColor("#16a34a"))
+        top1_pen.setWidth(4)
+        top1_series.setPen(top1_pen)
 
         bad_series = QLineSeries()
         bad_series.setName("악수율 <5%")
+        bad_series.setColor(QColor("#f59e0b"))
+        bad_pen = QPen(QColor("#f59e0b"))
+        bad_pen.setWidth(4)
+        bad_series.setPen(bad_pen)
 
+        score_series = QLineSeries()
+        score_series.setName("등급 점수")
+        score_series.setColor(QColor("#111827"))
+        score_pen = QPen(QColor("#111827"))
+        score_pen.setWidth(2)
+        score_series.setPen(score_pen)
+
+        change_series = QScatterSeries()
+        change_series.setName("등급 변경")
+        change_series.setColor(QColor("#dc2626"))
+        change_series.setBorderColor(QColor("#ffffff"))
+        change_series.setMarkerSize(8.0)
+
+        previous_level_id = None
+        score_values: list[int] = []
+        score_caps: list[int] = []
         for idx, game in enumerate(games, start=1):
             rating_series.append(idx, game.rating)
             top1_series.append(idx, game.top1_agreement * 100.0)
             bad_series.append(idx, game.bad_move_rate_5 * 100.0)
+            if game.player_level_score is not None:
+                score_value = int(game.player_level_score)
+                score_values.append(score_value)
+                cap = level_score_cap(game.player_level_id)
+                if cap is not None:
+                    score_caps.append(cap)
+                score_series.append(idx, score_value)
+                if previous_level_id is not None and game.player_level_id != previous_level_id:
+                    change_series.append(idx, score_value)
+                previous_level_id = game.player_level_id
 
         chart = QChart()
-        if games:
-            start_index = 1
-            current_mode = games[0].mode_id
+        chart.addSeries(rating_series)
+        chart.addSeries(top1_series)
+        chart.addSeries(bad_series)
+        if score_series.count() > 0:
+            segment_start = 1
+            current_mode = games[0].mode_id if games else None
             segments: list[tuple[int, int, int | None]] = []
             for idx, game in enumerate(games[1:], start=2):
                 if game.mode_id != current_mode:
-                    segments.append((start_index, idx - 1, current_mode))
-                    start_index = idx
+                    segments.append((segment_start, idx - 1, current_mode))
+                    segment_start = idx
                     current_mode = game.mode_id
-            segments.append((start_index, len(games), current_mode))
+            if games:
+                segments.append((segment_start, len(games), current_mode))
 
             for start_idx, end_idx, mode_id in segments:
                 color = mode_palette.get(mode_id)
                 if color is None:
                     continue
-                lower = QLineSeries()
                 upper = QLineSeries()
-                lower.append(start_idx - 0.5, 0.0)
-                lower.append(end_idx + 0.5, 0.0)
-                upper.append(start_idx - 0.5, 100.0)
-                upper.append(end_idx + 0.5, 100.0)
+                lower = QLineSeries()
+                for point_idx in range(start_idx, end_idx + 1):
+                    game = games[point_idx - 1]
+                    if game.player_level_score is None:
+                        continue
+                    upper.append(point_idx, float(game.player_level_score))
+                    lower.append(point_idx, 0.0)
+                if upper.count() == 0:
+                    continue
                 area = QAreaSeries(upper, lower)
                 area.setPen(QPen(Qt.PenStyle.NoPen))
                 area.setBrush(QBrush(color))
-                self._chart_band_series.extend([lower, upper, area])
+                self._chart_band_series.extend([upper, lower, area])
                 chart.addSeries(area)
-        chart.addSeries(rating_series)
-        chart.addSeries(top1_series)
-        chart.addSeries(bad_series)
+            chart.addSeries(score_series)
+        if change_series.count() > 0:
+            chart.addSeries(change_series)
         chart.setTitle(f"대국별 분석 추이 - {engine_name}")
 
         axis_x = QValueAxis()
@@ -1612,20 +1722,123 @@ class ResultWindow(QMainWindow):
         axis_x.setRange(1, max(1, len(games)))
 
         axis_y = QValueAxis()
-        axis_y.setTitleText("값")
+        axis_y.setTitleText("분석 지표 (%)")
         axis_y.setRange(0, 100)
+        axis_y.setTickCount(11)
+
+        axis_y_right = None
+        if score_values:
+            axis_y_right = QValueAxis()
+            axis_y_right.setTitleText("등급 점수")
+            axis_y_right.setRange(0, max(score_values + score_caps))
+            axis_y_right.setTickCount(6)
 
         chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
         chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
+        if axis_y_right is not None:
+            chart.addAxis(axis_y_right, Qt.AlignmentFlag.AlignRight)
+
         for series in chart.series():
             series.attachAxis(axis_x)
-            series.attachAxis(axis_y)
+            if axis_y_right is not None and (series in {score_series, change_series} or series in self._chart_band_series):
+                series.attachAxis(axis_y_right)
+            else:
+                series.attachAxis(axis_y)
+
+        if score_series.count() > 0 and axis_y_right is not None:
+            segment_start = 1
+            current_level = games[0].player_level_id if games else None
+            rank_segments: list[tuple[int, int, int | None]] = []
+            for idx, game in enumerate(games[1:], start=2):
+                if game.player_level_id != current_level:
+                    rank_segments.append((segment_start, idx - 1, current_level))
+                    segment_start = idx
+                    current_level = game.player_level_id
+            if games:
+                rank_segments.append((segment_start, len(games), current_level))
+            self._rank_label_segments = rank_segments
+            self._rank_label_series = score_series
+            self._rank_axis_max = axis_y_right.max()
+
+            for start_idx, end_idx, level_id in rank_segments:
+                cap = level_score_cap(level_id)
+                if cap is None:
+                    continue
+                cap_series = QLineSeries()
+                cap_series.append(start_idx - 0.45, float(cap))
+                cap_series.append(end_idx + 0.45, float(cap))
+                cap_pen = QPen(QColor("#4b5563"))
+                cap_pen.setWidth(1)
+                cap_series.setPen(cap_pen)
+                cap_series.setName("")
+                self._chart_band_series.append(cap_series)
+                chart.addSeries(cap_series)
+                cap_series.attachAxis(axis_x)
+                cap_series.attachAxis(axis_y_right)
+
+            for boundary_index in range(1, len(rank_segments)):
+                previous_segment = rank_segments[boundary_index - 1]
+                next_segment = rank_segments[boundary_index]
+                previous_cap = level_score_cap(previous_segment[2])
+                next_cap = level_score_cap(next_segment[2])
+                if previous_cap is None or next_cap is None:
+                    continue
+                boundary_x = next_segment[0] - 0.45
+                transition_series = QLineSeries()
+                transition_series.append(boundary_x, float(previous_cap))
+                transition_series.append(boundary_x, float(next_cap))
+                transition_pen = QPen(QColor("#6b7280"))
+                transition_pen.setWidth(1)
+                transition_series.setPen(transition_pen)
+                transition_series.setName("")
+                self._chart_band_series.append(transition_series)
+                chart.addSeries(transition_series)
+                transition_series.attachAxis(axis_x)
+                transition_series.attachAxis(axis_y_right)
+
         for series in self._chart_band_series:
             if isinstance(series, QAreaSeries):
                 for marker in chart.legend().markers(series):
                     marker.setVisible(False)
+            else:
+                for marker in chart.legend().markers(series):
+                    marker.setVisible(False)
+        for marker in chart.legend().markers(change_series):
+            marker.setVisible(False)
 
         self.chart_view.setChart(chart)
+        chart.plotAreaChanged.connect(lambda _rect: self._reposition_rank_label_widgets())
+        self._rebuild_rank_label_widgets()
+
+    def _clear_rank_label_widgets(self):
+        for widget in self._rank_label_widgets:
+            widget.deleteLater()
+        self._rank_label_widgets = []
+
+    def _rebuild_rank_label_widgets(self):
+        self._clear_rank_label_widgets()
+        if self._rank_label_series is None or not self._rank_label_segments:
+            return
+        for _start_idx, _end_idx, level_id in self._rank_label_segments:
+            label = QLabel(level_label(level_id), self.chart_view.viewport())
+            label.setStyleSheet("color:#9ca3af; background:transparent; font-size:16px;")
+            label.adjustSize()
+            label.show()
+            self._rank_label_widgets.append(label)
+        self._reposition_rank_label_widgets()
+
+    def _reposition_rank_label_widgets(self):
+        chart = self.chart_view.chart()
+        if chart is None or self._rank_label_series is None:
+            return
+        if len(self._rank_label_widgets) != len(self._rank_label_segments):
+            return
+        for label, (start_idx, end_idx, _level_id) in zip(self._rank_label_widgets, self._rank_label_segments):
+            span = max(1, end_idx - start_idx + 1)
+            label_x_value = start_idx + min(0.35, span * 0.12)
+            label_y_value = max(0.0, self._rank_axis_max * 0.06)
+            point = chart.mapToPosition(QPointF(label_x_value, label_y_value), self._rank_label_series)
+            label.move(int(point.x()), int(point.y()) - label.height())
 
     @staticmethod
     def _format_datetime(value: datetime | None) -> str:
