@@ -1683,36 +1683,53 @@ class ResultWindow(QMainWindow):
         chart.addSeries(top1_series)
         chart.addSeries(bad_series)
         if score_series.count() > 0:
-            segment_start = 1
-            current_mode = games[0].mode_id if games else None
-            segments: list[tuple[int, int, int | None]] = []
-            for idx, game in enumerate(games[1:], start=2):
-                if game.mode_id != current_mode:
-                    segments.append((segment_start, idx - 1, current_mode))
-                    segment_start = idx
-                    current_mode = game.mode_id
-            if games:
-                segments.append((segment_start, len(games), current_mode))
-
-            for start_idx, end_idx, mode_id in segments:
-                color = mode_palette.get(mode_id)
+            # 등급 점수 아래 채움은 "대국 i -> 대국 i+1" 구간을
+            # 해당 i번째 대국의 탁 색상으로 연결해서 보여준다.
+            for segment_index in range(len(games) - 1):
+                left_game = games[segment_index]
+                right_game = games[segment_index + 1]
+                color = mode_palette.get(left_game.mode_id)
                 if color is None:
                     continue
+                left_score = left_game.player_level_score
+                right_score = right_game.player_level_score
+                if left_score is None or right_score is None:
+                    continue
+
+                x1 = float(segment_index + 1)
+                x2 = float(segment_index + 2)
                 upper = QLineSeries()
                 lower = QLineSeries()
-                for point_idx in range(start_idx, end_idx + 1):
-                    game = games[point_idx - 1]
-                    if game.player_level_score is None:
-                        continue
-                    upper.append(point_idx, float(game.player_level_score))
-                    lower.append(point_idx, 0.0)
-                if upper.count() == 0:
-                    continue
+                upper.append(x1, float(left_score))
+                upper.append(x2, float(right_score))
+                lower.append(x1, 0.0)
+                lower.append(x2, 0.0)
+
                 area = QAreaSeries(upper, lower)
                 area.setPen(QPen(Qt.PenStyle.NoPen))
                 area.setBrush(QBrush(color))
                 self._chart_band_series.extend([upper, lower, area])
                 chart.addSeries(area)
+
+            # 마지막 점이 고립돼 보이지 않도록 끝에 작은 꼬리를 붙인다.
+            if games:
+                last_game = games[-1]
+                color = mode_palette.get(last_game.mode_id)
+                last_score = last_game.player_level_score
+                if color is not None and last_score is not None:
+                    x1 = max(1.0, float(len(games)) - 0.15)
+                    x2 = float(len(games))
+                    upper = QLineSeries()
+                    lower = QLineSeries()
+                    upper.append(x1, float(last_score))
+                    upper.append(x2, float(last_score))
+                    lower.append(x1, 0.0)
+                    lower.append(x2, 0.0)
+                    area = QAreaSeries(upper, lower)
+                    area.setPen(QPen(Qt.PenStyle.NoPen))
+                    area.setBrush(QBrush(color))
+                    self._chart_band_series.extend([upper, lower, area])
+                    chart.addSeries(area)
             chart.addSeries(score_series)
         if change_series.count() > 0:
             chart.addSeries(change_series)
@@ -1762,13 +1779,18 @@ class ResultWindow(QMainWindow):
             self._rank_label_series = score_series
             self._rank_axis_max = axis_y_right.max()
 
-            for start_idx, end_idx, level_id in rank_segments:
+            for segment_index, (start_idx, end_idx, level_id) in enumerate(rank_segments):
                 cap = level_score_cap(level_id)
                 if cap is None:
                     continue
+                start_x = float(start_idx)
+                if segment_index < len(rank_segments) - 1:
+                    end_x = float(rank_segments[segment_index + 1][0])
+                else:
+                    end_x = float(len(games))
                 cap_series = QLineSeries()
-                cap_series.append(start_idx - 0.45, float(cap))
-                cap_series.append(end_idx + 0.45, float(cap))
+                cap_series.append(start_x, float(cap))
+                cap_series.append(end_x, float(cap))
                 cap_pen = QPen(QColor("#4b5563"))
                 cap_pen.setWidth(1)
                 cap_series.setPen(cap_pen)
@@ -1785,7 +1807,7 @@ class ResultWindow(QMainWindow):
                 next_cap = level_score_cap(next_segment[2])
                 if previous_cap is None or next_cap is None:
                     continue
-                boundary_x = next_segment[0] - 0.45
+                boundary_x = float(next_segment[0])
                 transition_series = QLineSeries()
                 transition_series.append(boundary_x, float(previous_cap))
                 transition_series.append(boundary_x, float(next_cap))
@@ -1797,6 +1819,20 @@ class ResultWindow(QMainWindow):
                 chart.addSeries(transition_series)
                 transition_series.attachAxis(axis_x)
                 transition_series.attachAxis(axis_y_right)
+
+                boundary_top = max(previous_cap, next_cap)
+                boundary_series = QLineSeries()
+                boundary_series.append(boundary_x, 0.0)
+                boundary_series.append(boundary_x, float(boundary_top))
+                boundary_pen = QPen(QColor("#9ca3af"))
+                boundary_pen.setWidth(1)
+                boundary_pen.setStyle(Qt.PenStyle.DotLine)
+                boundary_series.setPen(boundary_pen)
+                boundary_series.setName("")
+                self._chart_band_series.append(boundary_series)
+                chart.addSeries(boundary_series)
+                boundary_series.attachAxis(axis_x)
+                boundary_series.attachAxis(axis_y_right)
 
         for series in self._chart_band_series:
             if isinstance(series, QAreaSeries):
