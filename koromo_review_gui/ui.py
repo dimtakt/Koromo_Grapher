@@ -1660,9 +1660,33 @@ class ResultWindow(QMainWindow):
         change_series.setBorderColor(QColor("#ffffff"))
         change_series.setMarkerSize(8.0)
 
+        def _rank_boundary_value(
+            left_level_id: int | None,
+            right_level_id: int | None,
+            left_score: int | None,
+            left_delta: int | None,
+        ) -> float | None:
+            if left_level_id is None or right_level_id is None or left_level_id == right_level_id:
+                return None
+            raw = float(left_score + left_delta) if left_score is not None and left_delta is not None else None
+            if right_level_id > left_level_id:
+                cap = level_score_cap(left_level_id)
+                if cap is None:
+                    return raw
+                if raw is None:
+                    return float(cap)
+                return max(float(cap), raw)
+
+            if raw is None:
+                return 0.0
+            return min(0.0, raw)
+
         previous_level_id = None
+        previous_score_value: int | None = None
+        previous_score_delta: int | None = None
         score_values: list[int] = []
         score_caps: list[int] = []
+        boundary_values: list[int] = []
         for idx, game in enumerate(games, start=1):
             rating_series.append(idx, game.rating)
             top1_series.append(idx, game.top1_agreement * 100.0)
@@ -1673,15 +1697,23 @@ class ResultWindow(QMainWindow):
                 cap = level_score_cap(game.player_level_id)
                 if cap is not None:
                     score_caps.append(cap)
+                boundary_value = _rank_boundary_value(
+                    previous_level_id,
+                    game.player_level_id,
+                    previous_score_value,
+                    previous_score_delta,
+                )
+                if boundary_value is not None:
+                    score_series.append(idx, boundary_value)
+                    boundary_values.append(int(boundary_value))
                 score_series.append(idx, score_value)
                 if previous_level_id is not None and game.player_level_id != previous_level_id:
                     change_series.append(idx, score_value)
                 previous_level_id = game.player_level_id
+                previous_score_value = score_value
+                previous_score_delta = game.player_level_delta
 
         chart = QChart()
-        chart.addSeries(rating_series)
-        chart.addSeries(top1_series)
-        chart.addSeries(bad_series)
         if score_series.count() > 0:
             # 등급 점수 아래 채움은 "대국 i -> 대국 i+1" 구간을
             # 해당 i번째 대국의 탁 색상으로 연결해서 보여준다.
@@ -1698,10 +1730,17 @@ class ResultWindow(QMainWindow):
 
                 x1 = float(segment_index + 1)
                 x2 = float(segment_index + 2)
+                right_boundary_value = _rank_boundary_value(
+                    left_game.player_level_id,
+                    right_game.player_level_id,
+                    int(left_score),
+                    left_game.player_level_delta,
+                )
+                right_y = float(right_score) if right_boundary_value is None else right_boundary_value
                 upper = QLineSeries()
                 lower = QLineSeries()
                 upper.append(x1, float(left_score))
-                upper.append(x2, float(right_score))
+                upper.append(x2, right_y)
                 lower.append(x1, 0.0)
                 lower.append(x2, 0.0)
 
@@ -1733,6 +1772,9 @@ class ResultWindow(QMainWindow):
             chart.addSeries(score_series)
         if change_series.count() > 0:
             chart.addSeries(change_series)
+        chart.addSeries(rating_series)
+        chart.addSeries(top1_series)
+        chart.addSeries(bad_series)
         chart.setTitle(f"대국별 분석 추이 - {engine_name}")
 
         axis_x = QValueAxis()
@@ -1744,13 +1786,21 @@ class ResultWindow(QMainWindow):
         axis_y.setTitleText("분석 지표 (%)")
         axis_y.setRange(0, 100)
         axis_y.setTickCount(11)
+        axis_y.setGridLineColor(QColor("#cbd5e1"))
+        axis_y.setLinePenColor(QColor("#94a3b8"))
+        axis_y.setLabelsColor(QColor("#4b5563"))
 
         axis_y_right = None
         if score_values:
             axis_y_right = QValueAxis()
             axis_y_right.setTitleText("등급 점수")
-            axis_y_right.setRange(0, max(score_values + score_caps))
-            axis_y_right.setTickCount(6)
+            axis_y_right.setRange(0, max(score_values + score_caps + boundary_values))
+            axis_y_right.setTickType(QValueAxis.TickType.TicksDynamic)
+            axis_y_right.setTickAnchor(0.0)
+            axis_y_right.setTickInterval(200.0)
+            axis_y_right.setGridLineColor(QColor("#e5ebf3"))
+            axis_y_right.setLinePenColor(QColor("#9ca3af"))
+            axis_y_right.setLabelsColor(QColor("#6b7280"))
 
         chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
         chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
@@ -1800,6 +1850,18 @@ class ResultWindow(QMainWindow):
                 cap_series.attachAxis(axis_x)
                 cap_series.attachAxis(axis_y_right)
 
+                mid_series = QLineSeries()
+                mid_series.append(start_x, float(cap) / 2.0)
+                mid_series.append(end_x, float(cap) / 2.0)
+                mid_pen = QPen(QColor("#9ca3af"))
+                mid_pen.setWidth(1)
+                mid_series.setPen(mid_pen)
+                mid_series.setName("")
+                self._chart_band_series.append(mid_series)
+                chart.addSeries(mid_series)
+                mid_series.attachAxis(axis_x)
+                mid_series.attachAxis(axis_y_right)
+
             for boundary_index in range(1, len(rank_segments)):
                 previous_segment = rank_segments[boundary_index - 1]
                 next_segment = rank_segments[boundary_index]
@@ -1826,7 +1888,6 @@ class ResultWindow(QMainWindow):
                 boundary_series.append(boundary_x, float(boundary_top))
                 boundary_pen = QPen(QColor("#9ca3af"))
                 boundary_pen.setWidth(1)
-                boundary_pen.setStyle(Qt.PenStyle.DotLine)
                 boundary_series.setPen(boundary_pen)
                 boundary_series.setName("")
                 self._chart_band_series.append(boundary_series)
