@@ -8,8 +8,8 @@
 <img src="image/detail.png" width="800px">
 </details>
 
-- [Koromo](http://amae-koromo.sapk.ch/) 링크 기준으로 Mahjong Soul 대국을 내려받아, 로컬 Mortal 엔진으로 복기 및 통계를 보여주는 도구입니다.
-- 치터 구분 / 유저 성적 추이 확인 등의 목적으로 개인 용도로 제작하였으며, 제작에 `OpenAI Codex`를 사용했습니다.
+- [Koromo](http://amae-koromo.sapk.ch/) 링크 기준으로 작혼 또는 마작일번가 대국을 내려받아, 로컬 Mortal 엔진으로 복기 및 통계를 보여주는 도구입니다.
+- 치터 구분 / 유저 성적 추이 확인 / 로컬 분석 등의 목적으로 개인 용도로 제작하였습니다.
 
 
 ## 사용법
@@ -37,6 +37,7 @@
 1. 작혼 전적의 경우, API를 통한 대국 데이터를 받기 위해 중국서버 계정이 필요합니다.
 2. 계정은 로컬에 저장됩니다. (경로 : `.\koromo_review_gui_cache\local_settings.json`)
 3. 실제 플레이 목적의 계정 사용은 권장하지 않습니다.
+> 마작일번가의 경우, [CityLogs](https://rc.honk.li/)를 사용하기에 계정이 필요하지 않습니다.
 ### 모델 관련
 1. 본 프로젝트에는 모델 데이터가 포함되지 않습니다.
 2. 따로 준비한 모델은 `.\model\[표시 될 모델명]\mortal.pth`와 같은 형태로 넣어야 합니다.
