@@ -446,7 +446,9 @@ class HandCompositeStrip(QWidget):
         y = baseline_bottom - pixmap.height() - 8
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(251, 113, 133, 88))
-        painter.drawRoundedRect(x - 3, y - 2, pixmap.width() + 6, pixmap.height() + 4, 6, 6)
+        call_highlight_w = min(32, pixmap.width() + 6)
+        call_highlight_x = x + (pixmap.width() - call_highlight_w) // 2 - 3
+        painter.drawRoundedRect(call_highlight_x, y - 2, call_highlight_w, pixmap.height() + 4, 6, 6)
         painter.drawPixmap(x, y, pixmap)
         return x + pixmap.width() + 8
 
@@ -468,9 +470,9 @@ class HandCompositeStrip(QWidget):
             pixmap = self._tile_pixmap(tile, rotated=(index == called_index))
             y = baseline_bottom - pixmap.height() - base_raise
             if highlight_last and index == len(tiles) - 1:
-                highlight_rect_x = x - 3
+                highlight_rect_w = min(32, pixmap.width() + 6)
+                highlight_rect_x = x + (pixmap.width() - highlight_rect_w) // 2 - 3
                 highlight_rect_y = y - 2
-                highlight_rect_w = pixmap.width() + 6
                 highlight_rect_h = pixmap.height() + 4
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor(253, 224, 71, 96))

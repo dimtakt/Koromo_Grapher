@@ -365,7 +365,7 @@ def parse_review_detail(path: str | Path) -> ReviewGameDetail:
                 fuuro_groups.append(_build_fuuro_group(actor, group))
 
             display_tehai_tiles = [_tile_token(tile) for tile in (state.get("tehai") or [])]
-            display_fuuro_groups = list(fuuro_groups)
+            display_fuuro_groups = list(reversed(fuuro_groups)) # 최근의 후로가 손패에 더 가깝게 보이도록 역순 배치.
 
             entries.append(
                 ReviewEntryDetail(
