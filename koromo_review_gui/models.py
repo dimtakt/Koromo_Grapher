@@ -12,6 +12,7 @@ class PlayerQuery:
     player_id: Optional[int] = None
     mode_id: Optional[int] = None
     mode_ids: Optional[list[int]] = None
+    ignore_tonpuu_for_mortal: bool = False
     majsoul_access_token: Optional[str] = None
     cn_login_email: Optional[str] = None
     cn_login_password: Optional[str] = None

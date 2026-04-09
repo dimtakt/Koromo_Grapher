@@ -39,6 +39,7 @@ class MjaiReviewerBridge:
         player_id: int,
         output_path: str | Path | None = None,
         state_file: str | Path | None = None,
+        ignore_tonpuu_for_mortal: bool = False,
     ) -> MjaiReviewerRunResult:
         input_path = Path(tenhou_json_path).resolve()
         out_path = Path(output_path).resolve() if output_path else input_path.with_suffix(".review.json")
@@ -64,6 +65,8 @@ class MjaiReviewerBridge:
         ]
         env = dict(os.environ)
         env["MORTAL_CFG_PATH"] = str(cfg_path.resolve())
+        if ignore_tonpuu_for_mortal:
+            env["MORTAL_ALLOW_TONPUU"] = "1"
         proc = subprocess.run(
             command,
             cwd=self.reviewer_root,

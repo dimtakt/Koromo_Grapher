@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QHeaderView,
@@ -628,7 +630,11 @@ class SingleAnalysisWorker(QObject):
                     prefix = f"[엔진 {model_index}/{total_models}] {engine_name}"
                     self.progress.emit(current, total, f"{prefix} | {message}")
 
-                stats = analyzer_service.analyze_single_prepared_game(prepared, progress_callback=bridge_progress)
+                stats = analyzer_service.analyze_single_prepared_game(
+                    prepared,
+                    ignore_tonpuu_for_mortal=self.query.ignore_tonpuu_for_mortal,
+                    progress_callback=bridge_progress,
+                )
                 reports.append(
                     EngineAnalysisResult(
                         engine_name=engine_name,
@@ -1993,6 +1999,19 @@ class MainWindow(QMainWindow):
         self.single_player_input.setEnabled(False)
         self.single_player_override.toggled.connect(self.single_player_input.setEnabled)
         self.single_source_hint = QLabel("-")
+        self.ignore_tonpuu_checkbox = QCheckBox("동풍전 제한 무시 (비권장)")
+        self.debug_options_button = QPushButton("설정")
+        self.debug_options_button.setFixedWidth(56)
+        self.debug_options_button.clicked.connect(self.open_debug_options_dialog)
+        self.debug_options_dialog = QDialog(self)
+        self.debug_options_dialog.setWindowTitle("설정")
+        self.debug_options_dialog.setModal(True)
+        debug_layout = QVBoxLayout(self.debug_options_dialog)
+        debug_layout.addWidget(self.ignore_tonpuu_checkbox)
+        debug_buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self.debug_options_dialog)
+        debug_buttons.rejected.connect(self.debug_options_dialog.close)
+        debug_buttons.accepted.connect(self.debug_options_dialog.close)
+        debug_layout.addWidget(debug_buttons)
 
         self.model_combo = QComboBox()
         self.model_combo.setToolTip("분석에 사용할 엔진 폴더를 실행 경로 기준 /model 아래에 넣어 주세요.")
@@ -2076,6 +2095,7 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.open_result_button)
         button_row.addWidget(self.save_button)
         button_row.addWidget(self.load_button)
+        button_row.addWidget(self.debug_options_button)
         shared_form.addRow("동작", button_row)
         controls_layout.addLayout(shared_form)
 
@@ -2191,6 +2211,7 @@ class MainWindow(QMainWindow):
         query = PlayerQuery(
             koromo_url=koromo_url,
             recent_games=recent_games,
+            ignore_tonpuu_for_mortal=self.ignore_tonpuu_checkbox.isChecked(),
             majsoul_access_token=None,
             cn_login_email=self.cn_email_input.text().strip() or None,
             cn_login_password=self.cn_password_input.text().strip() or None,
@@ -2203,6 +2224,7 @@ class MainWindow(QMainWindow):
             "player_id": None,
             "mode_id": None,
             "mode_ids": None,
+            "ignore_tonpuu_for_mortal": self.ignore_tonpuu_checkbox.isChecked(),
             "model_dirs": model_dirs,
             "cache_dir": self.cache_dir_input.text().strip(),
         }
@@ -2242,6 +2264,7 @@ class MainWindow(QMainWindow):
             "source_input": source_input,
             "single_player_override": self.single_player_override.isChecked(),
             "single_player_id": int(self.single_player_input.value()),
+            "ignore_tonpuu_for_mortal": self.ignore_tonpuu_checkbox.isChecked(),
             "model_dirs": model_dirs,
             "cache_dir": self.cache_dir_input.text().strip(),
         }
@@ -2255,6 +2278,7 @@ class MainWindow(QMainWindow):
             effective_player_id,
             PlayerQuery(
                 koromo_url="",
+                ignore_tonpuu_for_mortal=self.ignore_tonpuu_checkbox.isChecked(),
                 majsoul_access_token=None,
                 cn_login_email=self.cn_email_input.text().strip() or None,
                 cn_login_password=self.cn_password_input.text().strip() or None,
@@ -2364,6 +2388,11 @@ class MainWindow(QMainWindow):
         self.apply_loaded_session(session)
         self.progress_label.setText(f"불러옴: {Path(path).name}")
 
+    def open_debug_options_dialog(self):
+        self.debug_options_dialog.adjustSize()
+        self.debug_options_dialog.show()
+        self.debug_options_dialog.raise_()
+
     def delete_selected_session(self):
         item = self.recent_sessions_list.currentItem()
         if item is None:
@@ -2403,6 +2432,7 @@ class MainWindow(QMainWindow):
         query = session.query
         self.current_query_payload = dict(query)
         self.cache_dir_input.setText(query.get("cache_dir", self.cache_dir_input.text()))
+        self.ignore_tonpuu_checkbox.setChecked(bool(query.get("ignore_tonpuu_for_mortal", False)))
         saved_model_dirs = {str(Path(model_dir)) for model_dir in query.get("model_dirs", [])}
         self.populate_models_from_repo()
         if saved_model_dirs:
@@ -2428,6 +2458,7 @@ class MainWindow(QMainWindow):
                 player_id=query.get("player_id"),
                 mode_id=query.get("mode_id"),
                 mode_ids=query.get("mode_ids"),
+                ignore_tonpuu_for_mortal=bool(query.get("ignore_tonpuu_for_mortal", False)),
             )
 
         self.current_reports = session.reports
@@ -2452,10 +2483,12 @@ class MainWindow(QMainWindow):
         self.open_result_button.setEnabled(not running)
         self.save_button.setEnabled(not running)
         self.load_button.setEnabled(not running)
+        self.debug_options_button.setEnabled(not running)
         self.model_combo.setEnabled(not running)
         self.refresh_models_button.setEnabled(not running)
         self.refresh_sessions_button.setEnabled(not running)
         self.delete_session_button.setEnabled(not running)
+        self.ignore_tonpuu_checkbox.setEnabled(not running)
 
     def _default_session_filename(self) -> str:
         if self.current_query_payload and self.current_query_payload.get("analysis_mode") == "single":

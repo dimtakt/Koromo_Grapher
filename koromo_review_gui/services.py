@@ -572,6 +572,7 @@ class AnalyzerService:
                         seat,
                         review_output_path,
                         state_file=state_file,
+                        ignore_tonpuu_for_mortal=query.ignore_tonpuu_for_mortal,
                     )
                     all_decisions.extend(parse_reviewer_json(result.output_path, game.game_id))
                     analyzed_games.append(game)
@@ -592,6 +593,7 @@ class AnalyzerService:
     def analyze_single_prepared_game(
         self,
         prepared_game: PreparedSingleGame,
+        ignore_tonpuu_for_mortal: bool = False,
         progress_callback: ProgressCallback | None = None,
     ) -> AggregateStats:
         from .mjai_reviewer_bridge import MjaiReviewerBridge
@@ -614,6 +616,7 @@ class AnalyzerService:
             prepared_game.player_id,
             output_path,
             state_file=state_file,
+            ignore_tonpuu_for_mortal=ignore_tonpuu_for_mortal,
         )
         stats = summarize_decisions(parse_reviewer_json(result.output_path, prepared_game.game.game_id))
         self._attach_metadata(stats, [prepared_game.game])
