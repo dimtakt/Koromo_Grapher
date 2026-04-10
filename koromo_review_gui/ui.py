@@ -342,6 +342,8 @@ class PlacementPieWidget(QWidget):
 
 
 class HandCompositeStrip(QWidget):
+    ANKAN_CLOSED_GLYPH = "🀫"
+
     def __init__(
         self,
         tehai_tiles: list[str],
@@ -400,6 +402,11 @@ class HandCompositeStrip(QWidget):
         color = self.red_color if is_red_five(tile) else self.color
         return self._glyph_pixmap(tile_to_unicode(tile), color, rotated=rotated)
 
+    def _fuuro_tile_pixmap(self, group: ReviewFuuroGroup, index: int) -> QPixmap:
+        if group.kind == "ankan" and index in {0, len(group.tiles) - 1} and len(group.tiles) >= 4:
+            return self._glyph_pixmap(self.ANKAN_CLOSED_GLYPH, self.color, rotated=False)
+        return self._tile_pixmap(group.tiles[index], rotated=(index == group.called_tile_index))
+
     def _sequence_width(
         self,
         tiles: list[str],
@@ -424,7 +431,11 @@ class HandCompositeStrip(QWidget):
         if self.fuuro_groups:
             width += 12
         for index, group in enumerate(self.fuuro_groups):
-            width += self._sequence_width(group.tiles, group.called_tile_index)
+            group_width = 0
+            for tile_index, _tile in enumerate(group.tiles):
+                pixmap = self._fuuro_tile_pixmap(group, tile_index)
+                group_width += pixmap.width() if tile_index == group.called_tile_index else max(1, pixmap.width() - 5)
+            width += group_width
             if index != len(self.fuuro_groups) - 1:
                 width += 10
         return QSize(max(width + 4, 40), self.height())
@@ -515,16 +526,20 @@ class HandCompositeStrip(QWidget):
         if self.fuuro_groups:
             x += 12
         for index, group in enumerate(self.fuuro_groups):
-            x = self._draw_sequence(
-                painter,
-                x,
-                baseline_bottom,
-                group.tiles,
-                group.called_tile_index,
-                group.stacked_tile,
-                group.stacked_on_index,
-                8,
-            )
+            tile_positions: list[tuple[int, int, int, int]] = []
+            for tile_index, _tile in enumerate(group.tiles):
+                pixmap = self._fuuro_tile_pixmap(group, tile_index)
+                y = baseline_bottom - pixmap.height() - 8
+                painter.drawPixmap(x, y, pixmap)
+                tile_positions.append((x, y, pixmap.width(), pixmap.height()))
+                x += pixmap.width() if tile_index == group.called_tile_index else max(1, pixmap.width() - 5)
+            if group.stacked_tile is not None and group.stacked_on_index is not None and 0 <= group.stacked_on_index < len(tile_positions):
+                stack_pixmap = self._tile_pixmap(group.stacked_tile, rotated=True)
+                base_x, base_y, base_w, _ = tile_positions[group.stacked_on_index]
+                stack_x = base_x + max(0, (base_w - stack_pixmap.width()) // 2)
+                stack_y = base_y
+                stack_y = stack_y + 8 - stack_pixmap.height() - 8
+                painter.drawPixmap(stack_x, stack_y, stack_pixmap)
             if index != len(self.fuuro_groups) - 1:
                 x += 10
         painter.end()

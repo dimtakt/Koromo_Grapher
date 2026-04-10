@@ -142,6 +142,7 @@ class ReviewCandidate:
 @dataclass(slots=True)
 class ReviewFuuroGroup:
     label: str
+    kind: str = ""
     tiles: list[str] = field(default_factory=list)
     called_tile_index: int | None = None
     stacked_tile: str | None = None
@@ -247,6 +248,7 @@ def _build_fuuro_group(actor: int | None, group: dict) -> ReviewFuuroGroup:
         tiles.insert(min(called_tile_index, len(tiles)), previous_called_tile)
         return ReviewFuuroGroup(
             label=_fuuro_label(kind),
+            kind=kind,
             tiles=tiles,
             called_tile_index=called_tile_index,
             stacked_tile=called_tile,
@@ -263,6 +265,7 @@ def _build_fuuro_group(actor: int | None, group: dict) -> ReviewFuuroGroup:
 
     return ReviewFuuroGroup(
         label=_fuuro_label(kind),
+        kind=kind,
         tiles=tiles,
         called_tile_index=called_tile_index,
     )
